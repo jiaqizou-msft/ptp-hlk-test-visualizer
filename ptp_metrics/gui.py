@@ -33,6 +33,7 @@ from .models import Recording, DeviceInfo
 from .export import export_csv
 from .fastview import TouchpadView, StripChart, Sparkbars, color_for
 from .logger import StreamLogger
+from .screencap import ScreenRecorder
 
 # dark theme palette
 BG = "#0b1220"
@@ -66,6 +67,9 @@ class PTPMetricsApp(tk.Tk):
         self._loaded: Optional[Recording] = None
         self._logger: Optional[StreamLogger] = None
         self._record_path: Optional[str] = None
+        self._screenrec: Optional[ScreenRecorder] = None
+        self._video_path: Optional[str] = None
+        self._cached_bbox: Optional[Tuple[int, int, int, int]] = None
 
         self._cursor = 0                       # next frame index to render
         self._open_strokes: Dict[int, int] = {}   # contact_id -> last frame index drawn
@@ -110,6 +114,8 @@ class PTPMetricsApp(tk.Tk):
         self.btn_record = ttk.Button(tb, text="●  Record", command=self.toggle_record,
                                      state=tk.DISABLED)
         self.btn_record.pack(side=tk.LEFT, padx=3)
+        self.btn_video = ttk.Button(tb, text="◉  Rec Video", command=self.toggle_video)
+        self.btn_video.pack(side=tk.LEFT, padx=3)
         self.btn_clear = ttk.Button(tb, text="Clear", command=self.clear_data)
         self.btn_clear.pack(side=tk.LEFT, padx=3)
 
@@ -332,6 +338,73 @@ class PTPMetricsApp(tk.Tk):
         self.btn_record.configure(text="●  Record")
         self.status.set(f"Saved {lg.frames_written} frames → {self._record_path}")
 
+    # ------------------------------------------------------------------ video record
+    def toggle_video(self):
+        if self._screenrec is not None:
+            self._stop_video()
+        else:
+            self._start_video()
+
+    def _window_bbox(self) -> Tuple[int, int, int, int]:
+        """Screen rectangle (x, y, w, h) of the app's content area.
+
+        Must be called on the **main thread** — it touches Tk. The value is
+        cached so the recorder's background thread can read it Tk-free.
+        """
+        try:
+            self._cached_bbox = (self.winfo_rootx(), self.winfo_rooty(),
+                                 self.winfo_width(), self.winfo_height())
+        except Exception:
+            pass
+        return self._cached_bbox or (0, 0, 0, 0)
+
+    def _start_video(self):
+        # dependency preflight so we can give a friendly, actionable message
+        try:
+            import cv2  # noqa: F401
+        except Exception:  # noqa: BLE001
+            messagebox.showerror(
+                "Screen recording",
+                "Video recording needs OpenCV.\n\nInstall it with:\n"
+                "    python -m pip install opencv-python")
+            return
+        default = f"ptp_visualization_{datetime.now():%Y%m%d_%H%M%S}.mp4"
+        path = filedialog.asksaveasfilename(
+            title="Record visualization to…", defaultextension=".mp4",
+            initialfile=default, filetypes=[("MP4 video", "*.mp4")])
+        if not path:
+            return
+        try:
+            self._window_bbox()  # seed the cache on the main thread
+            # recorder reads the cached rect only — never calls Tk off-thread
+            rec = ScreenRecorder(path, lambda: self._cached_bbox, fps=15)
+            rec.start()
+            self._screenrec = rec
+            self._video_path = path
+            self.btn_video.configure(text="■  Stop Video")
+            self.status.set(f"Recording video → {os.path.basename(path)}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Screen recording", f"Failed to start:\n{e}")
+            self._screenrec = None
+
+    def _stop_video(self):
+        if self._screenrec is None:
+            return
+        rec = self._screenrec
+        self._screenrec = None
+        try:
+            rec.stop()
+        except Exception:
+            pass
+        self.btn_video.configure(text="◉  Rec Video")
+        if rec.error is not None:
+            messagebox.showerror("Screen recording", f"Recording error:\n{rec.error}")
+            self.status.set("Video recording failed.")
+        else:
+            self.status.set(
+                f"Saved video: {rec.frames_written} frames "
+                f"({rec.duration_s:.1f}s) → {os.path.basename(self._video_path or '')}")
+
     # ------------------------------------------------------------------ clear
     def _reset_view(self):
         self.view.clear()
@@ -480,6 +553,8 @@ class PTPMetricsApp(tk.Tk):
         t0 = time.perf_counter()
         try:
             self._render_new_frames()
+            if self._screenrec is not None:
+                self._window_bbox()   # refresh cached rect on the main thread
             now = time.perf_counter()
             if now - self._last_metrics_t >= self.METRICS_EVERY:
                 self._last_metrics_t = now
@@ -594,6 +669,11 @@ class PTPMetricsApp(tk.Tk):
         if self._logger is not None:
             try:
                 self._logger.stop()
+            except Exception:
+                pass
+        if self._screenrec is not None:
+            try:
+                self._screenrec.stop()
             except Exception:
                 pass
         if self._cap is not None:

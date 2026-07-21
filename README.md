@@ -14,6 +14,7 @@ The Windows HLK PTP qualification tests only provide a **pass/fail** verdict. **
 
 - **Real-time live capture** on any Windows 10/11 x64 device (no special hardware needed)
 - **Native Tkinter UI** with smooth incremental canvas rendering (60× faster than matplotlib)
+- **Screen recording** — capture the live visualization *and* the metrics/spec panel to an MP4
 - **Streaming logger** — background thread writes CSV/JSONL without dropping frames
 - **Microsoft spec PASS/FAIL** — evaluate against official Precision Touchpad thresholds
 - **Professional dashboards** — matplotlib-based PNG reports + JSON export with embedded metrics
@@ -67,6 +68,7 @@ python -m ptp_metrics gui
 |---------|----------|
 | **▶ Start Live** | Begin real-time touchpad capture; live trace rendering on incremental Tkinter canvas (smooth even after hours) |
 | **● Record / ■ Stop Rec** | Stream the session to disk (CSV or JSONL) via background writer thread; never drops frames |
+| **◉ Rec Video / ■ Stop Video** | Screen-record the visualization + live metrics/spec panel to an MP4 (background encoder, 15 fps) |
 | **Clear** | Wipe display and capture buffer (works mid-session) |
 | **Save CSV…** | Export contact trace data in canonical schema |
 | **Save Report…** | Generate PNG dashboard + JSON report with embedded spec evaluations |
@@ -175,11 +177,13 @@ ptp_metrics/
   export.py          # Serialize Recording to CSV / JSONL
   fastview.py        # High-performance native Tkinter canvas rendering
   logger.py          # Streaming CSV/JSONL writer (background thread)
+  screencap.py       # Screen-record the visualization to MP4 (background thread)
   gui.py             # Interactive GUI (Tkinter + fastview)
   cli.py             # Command-line interface (`python -m ptp_metrics ...`)
 tests/
   test_metrics.py    # Validate engine recovers injected ground truth
   test_gui_smoke.py  # Smoke tests for GUI and logging
+  test_screencap.py  # Validate the MP4 screen-capture encoder
 ```
 
 ## Notes & Limitations

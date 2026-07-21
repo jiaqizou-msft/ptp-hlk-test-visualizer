@@ -21,7 +21,7 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "PTPMetrics"
 ENTRY = os.path.join(HERE, "ptp_metrics_app.py")
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 def _run(cmd, **kw):
@@ -65,6 +65,10 @@ def build():
         # but be explicit about the TkAgg backend dependency:
         "--hidden-import", "matplotlib.backends.backend_tkagg",
         "--hidden-import", "tkinter",
+        # screen-recording feature: window grab (Pillow) + MP4 encode (OpenCV)
+        "--hidden-import", "PIL.ImageGrab",
+        "--hidden-import", "cv2",
+        "--collect-submodules", "cv2",
         ENTRY,
     ]
     _run(cmd, cwd=HERE)
