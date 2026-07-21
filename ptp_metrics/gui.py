@@ -673,6 +673,7 @@ class PTPMetricsApp(tk.Tk):
             "",
             f"jitter RMS    {_fmt(j.worst_rms_radial_mm,' mm',4)}",
             f"jitter p-p    {_fmt(j.worst_p2p_mm,' mm',4)}",
+            f"mean dist ctr {_fmt(j.worst_mean_dist_from_init_mm,' mm',4)}",
             f"  segments    {len(j.per_segment)}",
             "",
             f"linearity max {_fmt(lin.worst_max_dev_mm,' mm',4)}",

@@ -227,6 +227,7 @@ def _plot_metrics_text(ax, report: M.MetricsReport):
         ("JITTER (stationary)", ""),
         ("  worst RMS radial", f"{_fmt(j.worst_rms_radial_mm,' mm',4)}"),
         ("  worst peak-to-peak", f"{_fmt(j.worst_p2p_mm,' mm',4)}"),
+        ("  worst mean dist ctr", f"{_fmt(j.worst_mean_dist_from_init_mm,' mm',4)}"),
         ("  segments", f"{len(j.per_segment)}"),
         ("LINEARITY (drag)", ""),
         ("  worst max deviation", f"{_fmt(lin.worst_max_dev_mm,' mm',4)}"),

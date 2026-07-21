@@ -31,6 +31,14 @@ def test_jitter_recovered():
     assert jit.worst_rms_radial_mm is not None
     # radial RMS ~ sqrt(2)*0.08 = 0.113 mm; allow generous tolerance
     assert 0.05 < jit.worst_rms_radial_mm < 0.25
+    # mean L2 distance from the initial contact point: same order as the noise,
+    # positive, and below the peak-to-peak spread.
+    assert jit.worst_mean_dist_from_init_mm is not None
+    assert jit.worst_mean_dist_from_init_mm > 0
+    assert jit.worst_mean_dist_from_init_mm <= (jit.worst_p2p_mm or 1e9)
+    for seg in jit.per_segment:
+        assert seg.mean_dist_from_init_mm is not None
+        assert seg.mean_dist_from_init_counts >= 0
 
 
 def test_linearity_recovered():

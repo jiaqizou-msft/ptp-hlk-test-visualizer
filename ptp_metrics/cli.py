@@ -57,6 +57,8 @@ def _print_report(report: M.MetricsReport) -> None:
     print("\n-- Jitter (stationary) --")
     print(f"  worst RMS radial : {j.worst_rms_radial_mm and round(j.worst_rms_radial_mm,4)} mm")
     print(f"  worst peak-to-peak : {j.worst_p2p_mm and round(j.worst_p2p_mm,4)} mm")
+    print(f"  worst mean dist from center : "
+          f"{j.worst_mean_dist_from_init_mm and round(j.worst_mean_dist_from_init_mm,4)} mm")
     print(f"  segments analysed : {len(j.per_segment)}")
     if j.note:
         print(f"  note: {j.note}")

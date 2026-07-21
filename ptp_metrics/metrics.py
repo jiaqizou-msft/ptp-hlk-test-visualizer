@@ -5,8 +5,9 @@ as pass/fail:
 
 * **Resolution** - reported (from the HID descriptor) and *empirical* (smallest
   quantisation step actually observed), in counts/mm and DPI.
-* **Jitter** - position noise while a contact is held stationary, as RMS and
-  peak-to-peak in millimetres (PTP "stationary jitter").
+* **Jitter** - position noise while a contact is held stationary, as RMS,
+  peak-to-peak, and the mean L2 distance from the initial contact point, in
+  millimetres (PTP "stationary jitter").
 * **Linearity** - maximum / RMS perpendicular deviation of a straight-line drag
   from its best-fit line, in millimetres.
 * **Scan time / frame timing** - report rate (Hz) and frame-interval statistics
@@ -186,10 +187,12 @@ class JitterResult:
     rms_radial_mm: Optional[float]
     p2p_x_mm: Optional[float]
     p2p_y_mm: Optional[float]
+    mean_dist_from_init_mm: Optional[float]
     rms_x_counts: float
     rms_y_counts: float
     p2p_x_counts: float
     p2p_y_counts: float
+    mean_dist_from_init_counts: float
 
 
 @dataclass
@@ -197,6 +200,7 @@ class JitterMetrics:
     per_segment: List[JitterResult] = field(default_factory=list)
     worst_rms_radial_mm: Optional[float] = None
     worst_p2p_mm: Optional[float] = None
+    worst_mean_dist_from_init_mm: Optional[float] = None
     note: str = ""
 
 
@@ -257,20 +261,32 @@ def jitter_metrics(rec: Recording, tracks: Optional[List[Track]] = None,
             rms_yc = float(np.std(ys))
             p2p_xc = float(np.ptp(xs))
             p2p_yc = float(np.ptp(ys))
+            # mean L2 (Euclidean) distance of each sample from the *initial*
+            # point of contact (the first sample of the held segment).
+            dist_from_init_c = float(np.mean(
+                np.hypot(xs - xs[0], ys - ys[0])))
             cpm_x = dev.x_counts_per_mm
             cpm_y = dev.y_counts_per_mm
             rms_xm = rms_xc / cpm_x if cpm_x else None
             rms_ym = rms_yc / cpm_y if cpm_y else None
             rms_rad = (float(np.sqrt(rms_xm ** 2 + rms_ym ** 2))
                        if (rms_xm is not None and rms_ym is not None) else None)
+            # distance uses an isotropic mm scale (mean of both axes) when the
+            # per-axis counts/mm differ, so the L2 norm stays meaningful in mm.
+            mean_dist_mm = None
+            if cpm_x and cpm_y:
+                cpm_mean = 0.5 * (cpm_x + cpm_y)
+                mean_dist_mm = dist_from_init_c / cpm_mean
             res = JitterResult(
                 contact_id=t.contact_id,
                 n_samples=len(xs),
                 rms_x_mm=rms_xm, rms_y_mm=rms_ym, rms_radial_mm=rms_rad,
                 p2p_x_mm=(p2p_xc / cpm_x if cpm_x else None),
                 p2p_y_mm=(p2p_yc / cpm_y if cpm_y else None),
+                mean_dist_from_init_mm=mean_dist_mm,
                 rms_x_counts=rms_xc, rms_y_counts=rms_yc,
                 p2p_x_counts=p2p_xc, p2p_y_counts=p2p_yc,
+                mean_dist_from_init_counts=dist_from_init_c,
             )
             out.per_segment.append(res)
     if out.per_segment and has_mm:
@@ -282,6 +298,10 @@ def jitter_metrics(rec: Recording, tracks: Optional[List[Track]] = None,
             if r.p2p_x_mm is not None and r.p2p_y_mm is not None:
                 p2ps.append(np.hypot(r.p2p_x_mm, r.p2p_y_mm))
         out.worst_p2p_mm = float(max(p2ps)) if p2ps else None
+        out.worst_mean_dist_from_init_mm = max(
+            (r.mean_dist_from_init_mm for r in out.per_segment
+             if r.mean_dist_from_init_mm is not None),
+            default=None)
     if not out.per_segment:
         out.note = ("No stationary segment found (need a finger held still for "
                     f">= {min_len} reports moving < {move_thresh_mm} mm).")
