@@ -70,6 +70,7 @@ class PTPMetricsApp(tk.Tk):
         self._screenrec: Optional[ScreenRecorder] = None
         self._video_path: Optional[str] = None
         self._cached_bbox: Optional[Tuple[int, int, int, int]] = None
+        self._cached_screen: Optional[Tuple[int, int]] = None
 
         self._cursor = 0                       # next frame index to render
         self._open_strokes: Dict[int, int] = {}   # contact_id -> last frame index drawn
@@ -346,17 +347,44 @@ class PTPMetricsApp(tk.Tk):
             self._start_video()
 
     def _window_bbox(self) -> Tuple[int, int, int, int]:
-        """Screen rectangle (x, y, w, h) of the app's content area.
+        """Screen rectangle (x, y, w, h) of the app's whole window.
 
-        Must be called on the **main thread** — it touches Tk. The value is
-        cached so the recorder's background thread can read it Tk-free.
+        Uses the *outer* window geometry (title bar + borders included) so the
+        recording captures the entire application window, not just the content
+        area. Coordinates are in logical Tk pixels; the recorder scales them to
+        physical pixels for the grab. Must be called on the **main thread** — it
+        touches Tk. The value is cached so the recorder's background thread can
+        read it Tk-free.
         """
         try:
-            self._cached_bbox = (self.winfo_rootx(), self.winfo_rooty(),
-                                 self.winfo_width(), self.winfo_height())
+            # winfo_rootx/y = top-left of the *client* area; the window manager
+            # frame (title bar + borders) sits above/around it. Expand to the
+            # outer frame using the geometry offsets so nothing is clipped.
+            self.update_idletasks()
+            cx, cy = self.winfo_rootx(), self.winfo_rooty()
+            cw, ch = self.winfo_width(), self.winfo_height()
+            ox, oy = self.winfo_x(), self.winfo_y()          # outer top-left
+            rx, ry = self.winfo_rootx(), self.winfo_rooty()  # client top-left
+            # border thickness left/right, title-bar height (top)
+            bx = max(0, rx - ox)
+            by = max(0, ry - oy)
+            x = ox
+            y = oy
+            w = cw + 2 * bx
+            h = ch + by + bx  # bottom border ~= side border thickness
+            self._cached_bbox = (x, y, w, h)
         except Exception:
             pass
         return self._cached_bbox or (0, 0, 0, 0)
+
+    def _screen_size(self) -> Tuple[int, int]:
+        """Tk logical screen size — read on the main thread and cached."""
+        try:
+            self._cached_screen = (self.winfo_screenwidth(),
+                                   self.winfo_screenheight())
+        except Exception:
+            pass
+        return self._cached_screen or (0, 0)
 
     def _start_video(self):
         # dependency preflight so we can give a friendly, actionable message
@@ -377,7 +405,8 @@ class PTPMetricsApp(tk.Tk):
         try:
             self._window_bbox()  # seed the cache on the main thread
             # recorder reads the cached rect only — never calls Tk off-thread
-            rec = ScreenRecorder(path, lambda: self._cached_bbox, fps=15)
+            rec = ScreenRecorder(path, lambda: self._cached_bbox, fps=15,
+                                 screen_size_fn=self._screen_size)
             rec.start()
             self._screenrec = rec
             self._video_path = path
