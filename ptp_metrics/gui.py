@@ -205,6 +205,14 @@ class PTPMetricsApp(tk.Tk):
             val.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self._spec_rows[name] = {"dot": dot, "val": val}
 
+        # contact-continuity flag: highlighted when a fast swipe breaks up
+        self.dropout_var = tk.StringVar(value="Contact continuity: —")
+        self._dropout_label = tk.Label(
+            parent, textvariable=self.dropout_var, bg=PANEL, fg=MUTED,
+            font=("Segoe UI", 10, "bold"), anchor="w", justify=tk.LEFT,
+            wraplength=340)
+        self._dropout_label.pack(anchor=tk.W, fill=tk.X, padx=14, pady=(8, 0))
+
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12, pady=10)
         ttk.Label(parent, text="Measurements", style="Head.TLabel").pack(
             anchor=tk.W, padx=14, pady=(0, 4))
@@ -660,8 +668,10 @@ class PTPMetricsApp(tk.Tk):
         if report is None:
             self.meas.insert(tk.END, "No data.")
             self.meas.configure(state=tk.DISABLED)
+            self._render_dropout_flag(None)
             return
         r, j, lin, tim = report.resolution, report.jitter, report.linearity, report.timing
+        cont = report.continuity
         d = report.device
         lines = [
             f"frames        {n_frames}",
@@ -680,6 +690,9 @@ class PTPMetricsApp(tk.Tk):
             f"linearity rms {_fmt(lin.worst_rms_dev_mm,' mm',4)}",
             f"  segments    {len(lin.per_segment)}",
             "",
+            f"swipe breakups {cont.dropout_count}",
+            f"  max missing  {cont.max_missing_frames} frame(s)",
+            "",
             f"report rate   {_fmt(tim.report_rate_hz,' Hz',1)}",
             f"mean interval {_fmt(tim.mean_interval_ms,' ms',3)}",
             f"timing jitter {_fmt(tim.timing_jitter_ms,' ms',3)}",
@@ -687,6 +700,23 @@ class PTPMetricsApp(tk.Tk):
         ]
         self.meas.insert(tk.END, "\n".join(lines))
         self.meas.configure(state=tk.DISABLED)
+        self._render_dropout_flag(cont)
+
+    def _render_dropout_flag(self, cont: "M.ContinuityMetrics"):
+        if cont is None or cont.contacts_analyzed == 0:
+            self.dropout_var.set("Contact continuity: —")
+            self._dropout_label.configure(fg=MUTED)
+            return
+        n = cont.dropout_count
+        if n == 0:
+            self.dropout_var.set("Contact continuity: OK (continuous)")
+            self._dropout_label.configure(fg=GOOD)
+        else:
+            self.dropout_var.set(
+                f"⚠ Contact BROKE UP {n}× (max {cont.max_missing_frames} "
+                f"frame(s) missing) — spotty contact during swipe")
+            self._dropout_label.configure(fg=BAD)
+
 
     # ------------------------------------------------------------------ close
     def _on_close(self):

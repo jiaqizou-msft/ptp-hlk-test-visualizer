@@ -216,6 +216,7 @@ def _plot_timeline(ax, rec, report: M.MetricsReport):
 def _plot_metrics_text(ax, report: M.MetricsReport):
     ax.axis("off")
     r, j, lin, tim = report.resolution, report.jitter, report.linearity, report.timing
+    cont = report.continuity
     lines = [
         ("RESOLUTION", ""),
         ("  reported X", f"{_fmt(r.reported_x_counts_per_mm,' c/mm',1)}  "
@@ -233,6 +234,9 @@ def _plot_metrics_text(ax, report: M.MetricsReport):
         ("  worst max deviation", f"{_fmt(lin.worst_max_dev_mm,' mm',4)}"),
         ("  worst RMS deviation", f"{_fmt(lin.worst_rms_dev_mm,' mm',4)}"),
         ("  segments", f"{len(lin.per_segment)}"),
+        ("CONTINUITY (swipe)", ""),
+        ("  swipe break-ups", f"{cont.dropout_count}"),
+        ("  max missing frames", f"{cont.max_missing_frames}"),
         ("TIMING", ""),
         ("  report rate", f"{_fmt(tim.report_rate_hz,' Hz',1)}"),
         ("  mean interval", f"{_fmt(tim.mean_interval_ms,' ms',3)}"),

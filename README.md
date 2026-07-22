@@ -31,6 +31,7 @@ Following the Windows Precision Touchpad specification and HID usage model:
 - **Linearity** — maximum and RMS perpendicular deviation from a best-fit line during drags (mm); max threshold: ≤0.5 mm
 - **Positional Delta** — per-frame maximum movement jump (mm), detecting outliers and signal issues; max threshold: ≤0.5 mm
 - **Contact Timing** — per-contact down/up/lifetime, report counts, and maximum simultaneous contacts
+- **Contact Continuity (swipe break-ups)** — flags and counts every instance where a *moving* contact's report goes spotty (the continuous report breaks into segments) during a fast swipe; a compliant touchpad reports one continuous contact from touch-down to lift-off
 
 ## Installation
 

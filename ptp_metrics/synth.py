@@ -48,16 +48,23 @@ def synth_recording(
     drag_len_mm: float = 60.0,
     drag_angle_deg: float = 20.0,
     seed: int = 7,
+    drop_drag_frames: tuple[int, ...] = (),
 ) -> Recording:
     """Build a synthetic down/hold/drag/up recording with known properties.
 
     The injected ``jitter_mm`` (RMS) and ``linearity_error_mm`` (sinusoidal bow)
     are what the metrics engine should approximately recover.
+
+    ``drop_drag_frames`` lists drag-sample positions (0-based within the drag)
+    whose report is *omitted* while the finger keeps moving — simulating a
+    spotty-contact dropout. The global frame index still advances across the
+    omission, so the contact's track shows a gap the continuity metric detects.
     """
     rng = np.random.default_rng(seed)
     dev = device or default_device()
     cpm_x = dev.x_counts_per_mm or 100.0
     cpm_y = dev.y_counts_per_mm or 100.0
+    drop_set = set(drop_drag_frames)
 
     dt_ms = 1000.0 / report_rate_hz
     n_still = max(2, int(stationary_ms / dt_ms))
@@ -106,6 +113,11 @@ def synth_recording(
         jy = rng.normal(0.0, jitter_mm)
         x_mm = cx_mm + s * ux + bow * nx + jx
         y_mm = cy_mm + s * uy + bow * ny + jy
+        if k in drop_set:
+            # dropped report: advance the frame index + clock, emit nothing
+            idx += 1
+            scan_t_us += max(0.1, dt_ms + rng.normal(0.0, timing_jitter_ms)) * 1000.0
+            continue
         push(x_mm, y_mm)
 
     rec = Recording(device=dev, frames=frames, source="synthetic")

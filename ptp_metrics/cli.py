@@ -81,6 +81,12 @@ def _print_report(report: M.MetricsReport) -> None:
     for cl in ct.contacts:
         dur = f"{cl.duration_ms:.0f} ms" if cl.duration_ms else f"{cl.n_reports} reports"
         print(f"   contact {cl.contact_id}: {cl.n_reports} reports, {dur}")
+    cont = report.continuity
+    print("\n-- Contact continuity (fast-swipe dropouts) --")
+    print(f"  swipe break-ups flagged : {cont.dropout_count}")
+    print(f"  max missing frames : {cont.max_missing_frames}")
+    if cont.note:
+        print(f"  note: {cont.note}")
     print("==========================\n")
 
 

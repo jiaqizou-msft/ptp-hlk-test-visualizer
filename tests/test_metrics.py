@@ -55,6 +55,31 @@ def test_timing_recovered():
     assert 120 < tim.report_rate_hz < 145
 
 
+def test_continuity_clean_swipe_has_no_dropouts():
+    # a normal continuous drag should report zero break-ups
+    rec = synth_recording(seed=5)
+    cont = M.continuity_metrics(rec)
+    assert cont.dropout_count == 0
+    assert cont.contacts_analyzed >= 1
+
+
+def test_continuity_detects_swipe_dropouts():
+    # fast swipe with three omitted reports mid-drag -> three break-ups
+    rec = synth_recording(drag_ms=300.0, drag_len_mm=90.0, jitter_mm=0.01,
+                          seed=6, drop_drag_frames=(10, 20, 21))
+    cont = M.continuity_metrics(rec)
+    # frames 20 & 21 are adjacent -> a single 2-frame gap; frame 10 -> another.
+    assert cont.dropout_count == 2, f"expected 2 events, got {cont.dropout_count}"
+    assert cont.max_missing_frames >= 2
+    for ev in cont.events:
+        assert ev.missing_frames >= 1
+        assert ev.step_before_mm is not None and ev.step_before_mm > 0
+    # exposed through the full report + dict
+    report = M.compute_all(rec)
+    assert report.continuity.dropout_count == 2
+    assert report.to_dict()["continuity"]["dropout_count"] == 2
+
+
 def test_csv_roundtrip():
     rec = synth_recording(seed=4)
     with tempfile.TemporaryDirectory() as d:

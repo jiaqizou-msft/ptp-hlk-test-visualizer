@@ -544,6 +544,130 @@ def contact_timing_metrics(rec: Recording, timing: Optional[TimingMetrics] = Non
 
 
 # --------------------------------------------------------------------------- #
+# Contact continuity (fast-swipe dropout detection)
+# --------------------------------------------------------------------------- #
+@dataclass
+class DropoutEvent:
+    """One instance of a moving contact's report breaking up (going spotty)."""
+    contact_id: int
+    frame_before: int          # last frame index before the gap
+    frame_after: int           # first frame index after the gap
+    missing_frames: int        # number of consecutive frames the contact vanished
+    jump_mm: Optional[float]   # positional jump across the gap
+    jump_counts: float
+    step_before_mm: Optional[float]      # per-frame motion right before the gap
+    step_before_counts: Optional[float]
+
+
+@dataclass
+class ContinuityMetrics:
+    events: List[DropoutEvent] = field(default_factory=list)
+    dropout_count: int = 0     # number of break-up instances flagged
+    total_strokes: int = 0     # continuous runs across all contacts
+    contacts_analyzed: int = 0
+    max_missing_frames: int = 0
+    note: str = ""
+
+
+def continuity_metrics(rec: Recording, tracks: Optional[List[Track]] = None,
+                       max_gap_frames: int = 10, min_move_mm: float = 0.2,
+                       moving_factor: float = 2.0) -> ContinuityMetrics:
+    """Detect when a *moving* contact's continuous report breaks into segments.
+
+    A Precision Touchpad should report a swiping finger continuously — one
+    contact id present in every consecutive frame from touch-down to lift-off.
+    When a fast swipe instead "breaks up" (the contact vanishes for one or more
+    frames mid-motion and then reappears), that is a dropout / spotty-contact
+    defect. This routine flags and counts those instances.
+
+    Detection (per contact id, samples ordered by frame index):
+      * a *gap* is a jump of >= 2 in the frame index (>= 1 missing frame);
+      * the gap must be **short** (``missing_frames <= max_gap_frames``) — long
+        absences are treated as a deliberate finger lift, not a dropout;
+      * the contact must be **in motion** just before the gap (per-frame step
+        >= ``min_move_mm`` in mm, or, without a physical size, >= ``moving_factor``
+        times the median per-frame step) — this excludes stationary lift/retaps.
+
+    Note: this assumes the device keeps the same contact id across a dropout
+    (the usual firmware behaviour). A dropout that also renumbers the contact id
+    is reported as two separate strokes and is not counted here.
+    """
+    tracks = tracks if tracks is not None else extract_tracks(rec)
+    dev = rec.device
+    out = ContinuityMetrics()
+    has_mm = bool(dev.x_counts_per_mm and dev.y_counts_per_mm)
+    cpm_x = dev.x_counts_per_mm or 1.0
+    cpm_y = dev.y_counts_per_mm or 1.0
+
+    # median consecutive per-frame step (counts) for the resolution-free gate
+    all_steps: List[float] = []
+    for t in tracks:
+        fi = t.frame_idx
+        for i in range(1, len(t)):
+            if fi[i] - fi[i - 1] == 1:
+                all_steps.append(float(np.hypot(t.x[i] - t.x[i - 1],
+                                                t.y[i] - t.y[i - 1])))
+    median_step_counts = float(np.median(all_steps)) if all_steps else 0.0
+
+    for t in tracks:
+        n = len(t)
+        out.contacts_analyzed += 1
+        if n < 1:
+            continue
+        fi = t.frame_idx
+        runs = 1
+        for i in range(1, n):
+            gap = fi[i] - fi[i - 1]
+            if gap <= 1:
+                continue
+            runs += 1
+            missing = int(round(gap - 1))
+            if missing > max_gap_frames:
+                continue  # long absence -> deliberate lift, not a dropout
+
+            # per-frame motion immediately before the gap (needs a contiguous pair)
+            step_counts = None
+            step_mm = None
+            if i >= 2 and (fi[i - 1] - fi[i - 2] == 1):
+                sx = t.x[i - 1] - t.x[i - 2]
+                sy = t.y[i - 1] - t.y[i - 2]
+                step_counts = float(np.hypot(sx, sy))
+                step_mm = (float(np.hypot(sx / cpm_x, sy / cpm_y))
+                           if has_mm else None)
+            if step_counts is None:
+                continue  # can't tell if it was moving; skip
+
+            if has_mm:
+                moving = step_mm >= min_move_mm
+            else:
+                moving = (median_step_counts > 0 and
+                          step_counts >= moving_factor * median_step_counts)
+            if not moving:
+                continue
+
+            jx = t.x[i] - t.x[i - 1]
+            jy = t.y[i] - t.y[i - 1]
+            out.events.append(DropoutEvent(
+                contact_id=t.contact_id,
+                frame_before=int(fi[i - 1]), frame_after=int(fi[i]),
+                missing_frames=missing,
+                jump_mm=(float(np.hypot(jx / cpm_x, jy / cpm_y)) if has_mm else None),
+                jump_counts=float(np.hypot(jx, jy)),
+                step_before_mm=step_mm, step_before_counts=step_counts,
+            ))
+            out.max_missing_frames = max(out.max_missing_frames, missing)
+        out.total_strokes += runs
+
+    out.dropout_count = len(out.events)
+    if out.contacts_analyzed == 0:
+        out.note = "No contacts to analyze."
+    elif out.dropout_count == 0:
+        out.note = "No fast-swipe contact dropouts detected."
+    return out
+
+
+
+# --------------------------------------------------------------------------- #
 # Full report
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -555,6 +679,7 @@ class MetricsReport:
     linearity: LinearityMetrics
     timing: TimingMetrics
     contact_timing: ContactTimingMetrics
+    continuity: ContinuityMetrics
 
     def to_dict(self) -> dict:
         return {
@@ -566,6 +691,7 @@ class MetricsReport:
             "timing": {k: v for k, v in asdict(self.timing).items()
                        if k not in ("intervals_ms", "timestamps_ms")},
             "contact_timing": asdict(self.contact_timing),
+            "continuity": asdict(self.continuity),
         }
 
 
@@ -589,4 +715,5 @@ def compute_all(rec: Recording) -> MetricsReport:
         linearity=linearity_metrics(rec, tracks),
         timing=timing,
         contact_timing=contact_timing_metrics(rec, timing),
+        continuity=continuity_metrics(rec, tracks),
     )
