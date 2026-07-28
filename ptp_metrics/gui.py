@@ -155,14 +155,21 @@ class PTPMetricsApp(tk.Tk):
 
         ttk.Label(tb, text="Pressure").pack(side=tk.LEFT)
         self.var_pressure_src = tk.StringVar(value=PRESSURE_OFF)
-        ttk.Combobox(tb, textvariable=self.var_pressure_src, width=14,
-                     state="readonly",
-                     values=[PRESSURE_OFF, PRESSURE_HID, PRESSURE_AREA]).pack(
-            side=tk.LEFT, padx=(2, 8))
+        pcombo = ttk.Combobox(tb, textvariable=self.var_pressure_src, width=14,
+                              state="readonly",
+                              values=[PRESSURE_OFF, PRESSURE_HID, PRESSURE_AREA])
+        pcombo.pack(side=tk.LEFT, padx=(2, 8))
+        pcombo.bind("<<ComboboxSelected>>", lambda e: self._on_pressure_change())
 
-        ttk.Label(tb, text="Window s").pack(side=tk.LEFT)
+        ttk.Separator(tb, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        ttk.Label(tb, text="Avg window").pack(side=tk.LEFT)
         self.var_window = tk.StringVar()
-        ttk.Entry(tb, textvariable=self.var_window, width=5).pack(side=tk.LEFT, padx=(2, 6))
+        win_entry = ttk.Entry(tb, textvariable=self.var_window, width=5)
+        win_entry.pack(side=tk.LEFT, padx=(2, 2))
+        ttk.Label(tb, text="sec (blank = all)", foreground=MUTED).pack(side=tk.LEFT)
+        win_entry.bind("<Return>", lambda e: self._apply_window())
+        win_entry.bind("<FocusOut>", lambda e: self._apply_window())
 
         # status bar
         sb = ttk.Frame(self, padding=(10, 4))
@@ -332,6 +339,7 @@ class PTPMetricsApp(tk.Tk):
                 self._cap.stop()
             except Exception:
                 pass
+            self._cap = None
         self._live = False
         self.btn_live.configure(text="▶  Start Live")
         self.btn_record.configure(state=tk.DISABLED)
@@ -504,9 +512,56 @@ class PTPMetricsApp(tk.Tk):
         self.view.set_spec_overlay(self.var_spec.get())
 
     def _toggle_contact_size(self):
-        self.view.set_contact_size_mode(self.var_contact_size.get())
+        on = self.var_contact_size.get()
+        self.view.set_contact_size_mode(on)
         # rebuild so existing markers pick up the new sizing immediately
         self._rebuild_trace()
+        if on and not self._buffer_has_size():
+            self.status.set("Contact size ON — but this data has no width/height "
+                            "(needs a device/capture that reports contact size).")
+        elif on:
+            self.status.set("Contact size ON — markers scaled to reported W×H.")
+        else:
+            self.status.set("Contact size off.")
+
+    def _on_pressure_change(self):
+        src = self.var_pressure_src.get()
+        if src == PRESSURE_OFF:
+            self._pressure_readout = None
+            self.status.set("Pressure readout off.")
+            return
+        if src == PRESSURE_HID and not self._buffer_has_pressure():
+            self.status.set("Pressure = HID selected — but this data has no HID "
+                            "pressure (typical for non-force-haptic pads).")
+        elif src == PRESSURE_AREA and not self._buffer_has_size():
+            self.status.set("Pressure = Contact area selected — but this data has "
+                            "no width/height to compute area from.")
+        else:
+            self.status.set(f"Pressure source: {src}.")
+
+    def _apply_window(self):
+        w = self._window_seconds()
+        if w is None:
+            self.status.set("Averaging window: all data (no rolling limit).")
+        else:
+            self.status.set(f"Averaging window: last {w:g} s "
+                            "(older samples discarded).")
+
+    def _buffer_has_size(self) -> bool:
+        frames, _ = self._source()
+        for f in (frames or [])[-200:]:
+            for c in f.active_contacts:
+                if c.width or c.height:
+                    return True
+        return False
+
+    def _buffer_has_pressure(self) -> bool:
+        frames, _ = self._source()
+        for f in (frames or [])[-200:]:
+            for c in f.active_contacts:
+                if c.pressure is not None:
+                    return True
+        return False
 
     def _window_seconds(self) -> Optional[float]:
         """Rolling-window length in seconds, or None to keep everything."""
@@ -872,7 +927,7 @@ class PTPMetricsApp(tk.Tk):
         ]
         win = self._window_seconds()
         if win is not None:
-            lines.append(f"window        {win:g} s (rolling)")
+            lines.append(f"avg window    last {win:g} s")
         if self._pressure_readout is not None:
             lines.append(f"pressure      {self._pressure_readout}")
         self.meas.insert(tk.END, "\n".join(lines))

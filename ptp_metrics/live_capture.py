@@ -36,6 +36,11 @@ def is_supported() -> bool:
     return sys.platform == "win32"
 
 
+# incremented per capture session so each Raw Input window gets a unique class
+# name (a fixed name fails to re-register on a second Start Live).
+_WND_CLASS_SEQ = 0
+
+
 # --------------------------------------------------------------------------- #
 # HID usage constants
 # --------------------------------------------------------------------------- #
@@ -239,7 +244,15 @@ class LiveCapture:
         cls = WNDCLASS()
         cls.lpfnWndProc = self._wndproc
         cls.hInstance = hInstance
-        cls.lpszClassName = "PTPMetricsRawInputWnd"
+        # Unique class name per instance + run: a fixed name fails to
+        # re-register on the second Start Live (the class from the first
+        # session is still registered), which would kill this thread and
+        # silently stop live capture. A unique name makes restart reliable.
+        global _WND_CLASS_SEQ
+        _WND_CLASS_SEQ += 1
+        cls.lpszClassName = f"PTPMetricsRawInputWnd_{id(self):x}_{_WND_CLASS_SEQ}"
+        self._cls_name = cls.lpszClassName
+        self._hinstance = hInstance
         atom = user32.RegisterClassW(C.byref(cls))
         if not atom:
             raise C.WinError(C.get_last_error())
@@ -261,6 +274,18 @@ class LiveCapture:
                 break
             user32.TranslateMessage(C.byref(msg))
             user32.DispatchMessageW(C.byref(msg))
+
+        # tidy up so the next Start Live can register cleanly
+        try:
+            if self._hwnd:
+                user32.DestroyWindow(self._hwnd)
+        except Exception:
+            pass
+        try:
+            user32.UnregisterClassW(self._cls_name, self._hinstance)
+        except Exception:
+            pass
+        self._hwnd = None
 
     def _on_message(self, hwnd, message, wparam, lparam):
         if message == WM_INPUT:
