@@ -51,6 +51,7 @@ HID_USAGE_DIGITIZER_CONTACT_COUNT = 0x54
 HID_USAGE_DIGITIZER_SCAN_TIME = 0x56
 HID_USAGE_DIGITIZER_WIDTH = 0x48
 HID_USAGE_DIGITIZER_HEIGHT = 0x49
+HID_USAGE_DIGITIZER_TIP_PRESSURE = 0x30
 
 HIDP_INPUT = 0
 
@@ -388,6 +389,8 @@ class LiveCapture:
             cid = self._value(info, HID_USAGE_PAGE_DIGITIZER, lc, HID_USAGE_DIGITIZER_CONTACT_ID, report)
             width = self._value(info, HID_USAGE_PAGE_DIGITIZER, lc, HID_USAGE_DIGITIZER_WIDTH, report)
             height = self._value(info, HID_USAGE_PAGE_DIGITIZER, lc, HID_USAGE_DIGITIZER_HEIGHT, report)
+            pressure = self._value(info, HID_USAGE_PAGE_DIGITIZER, lc,
+                                   HID_USAGE_DIGITIZER_TIP_PRESSURE, report)
             contacts.append(Contact(
                 contact_id=cid if cid is not None else lc,
                 x=float(x), y=float(y),
@@ -395,6 +398,7 @@ class LiveCapture:
                 confidence=confident,
                 width=float(width) if width is not None else None,
                 height=float(height) if height is not None else None,
+                pressure=float(pressure) if pressure is not None else None,
             ))
         # Fallback: if the button (Tip Switch) read is unsupported on this device,
         # gate on contact_count and non-zero coordinates instead so we still work.

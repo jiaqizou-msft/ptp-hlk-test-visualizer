@@ -303,6 +303,107 @@ def infer_logical_range(rec: Recording, force: bool = False) -> bool:
     return changed
 
 
+def is_digiinfo_xml(path: str) -> bool:
+    """True if the file looks like a DigiInfo XML packet log."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            head = fh.read(400)
+    except OSError:
+        return False
+    return "<inputmanager" in head
+
+
+def _digi_res_counts_per_cm(digitizer, axis):
+    for p in digitizer.findall("./properties/property"):
+        if p.get("name") == axis:
+            try:
+                return float(p.get("res"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _digi_logrange(digitizer, axis):
+    for p in digitizer.findall("./properties/property"):
+        if p.get("name") == axis:
+            return float(p.get("logmin", 0)), float(p.get("logmax", 1))
+    return 0.0, 1.0
+
+
+def load_digiinfo_xml(path: str, device: Optional[DeviceInfo] = None) -> Recording:
+    """Parse a DigiInfo XML packet log into a :class:`Recording`.
+
+    DigiInfo logs a stream of ``<packet>`` elements under ``<events>``; each
+    packet carries ``x``/``y`` (logical counts), ``down`` (Tip Switch),
+    ``confidence``, ``contactid`` and ``scantime`` (HID Scan Time, 100 us units),
+    and optionally ``width``/``height``/``pressure``. Device resolution comes
+    from the multi-touch ``<digitizer>`` block (the one owning a ``contactid``
+    property); if that is absent the last declared digitizer is used.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(path).getroot()
+
+    digs = root.findall(".//digitizer")
+    chosen = None
+    for d in digs:
+        names = {p.get("name") for p in d.findall("./properties/property")}
+        if "contactid" in names:
+            chosen = d
+            break
+    if chosen is None and digs:
+        chosen = digs[-1]
+
+    dev = device or DeviceInfo()
+    if not dev.name or dev.name == "Unknown PTP device":
+        dev.name = f"DigiInfo {chosen.get('name') if chosen is not None else 'device'}"
+    if chosen is not None:
+        dev.x_logical_min, dev.x_logical_max = _digi_logrange(chosen, "x")
+        dev.y_logical_min, dev.y_logical_max = _digi_logrange(chosen, "y")
+        rx = _digi_res_counts_per_cm(chosen, "x")   # counts per cm
+        ry = _digi_res_counts_per_cm(chosen, "y")
+        if rx and not dev.x_physical_mm:
+            dev.x_physical_mm = abs(dev.x_logical_max - dev.x_logical_min) / (rx / 10.0)
+        if ry and not dev.y_physical_mm:
+            dev.y_physical_mm = abs(dev.y_logical_max - dev.y_logical_min) / (ry / 10.0)
+        try:
+            if chosen.get("maxcsrs"):
+                dev.max_contacts = int(chosen.get("maxcsrs"))
+        except ValueError:
+            pass
+
+    def _num(p, attr):
+        v = p.get(attr)
+        try:
+            return float(v) if v is not None and v != "" else None
+        except ValueError:
+            return None
+
+    frames: List[Frame] = []
+    for i, p in enumerate(root.findall(".//packet")):
+        down = (p.get("down", "true").lower() == "true")
+        conf = (p.get("confidence", "true").lower() == "true")
+        try:
+            cid = int(p.get("contactid", "0"))
+        except ValueError:
+            cid = 0
+        c = Contact(contact_id=cid, x=float(p.get("x", 0)), y=float(p.get("y", 0)),
+                    tip=down, confidence=conf,
+                    width=_num(p, "width"), height=_num(p, "height"),
+                    pressure=_num(p, "pressure"))
+        scan = p.get("scantime")
+        tm = p.get("time")
+        frames.append(Frame(
+            index=i,
+            scan_time=float(scan) if scan is not None else None,
+            contacts=[c],
+            contact_count=1 if down else 0,
+            button=False,
+            host_timestamp=(float(tm) / 1000.0) if tm is not None else None,
+        ))
+    return Recording(device=dev, frames=frames, source=os.path.abspath(path))
+
+
 def run_digiinfo(digiinfo_exe: str, timeout: float = 8.0) -> Tuple[str, DeviceInfo]:
     """Run DigiInfo.exe, capture stdout, and parse it into a :class:`DeviceInfo`.
 

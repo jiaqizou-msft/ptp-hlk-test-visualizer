@@ -45,6 +45,12 @@ GOOD = "#22c55e"
 BAD = "#ef4444"
 WARN = "#f59e0b"
 
+# pressure-source options (force-haptic pads report HID Tip Pressure; ordinary
+# pads don't, so a contact-area proxy is offered instead)
+PRESSURE_OFF = "Off"
+PRESSURE_HID = "HID Pressure"
+PRESSURE_AREA = "Contact area (W×H)"
+
 
 def _fmt(v, unit="", nd=3):
     return "—" if v is None else f"{v:.{nd}f}{unit}"
@@ -81,6 +87,7 @@ class PTPMetricsApp(tk.Tk):
         self._last_metrics_t = 0.0
         self._last_report: Optional[M.MetricsReport] = None
         self._spec_rows: Dict[str, dict] = {}
+        self._pressure_readout: Optional[str] = None
 
         self._setup_style()
         self._build_widgets()
@@ -139,6 +146,23 @@ class PTPMetricsApp(tk.Tk):
         self.var_spec = tk.BooleanVar(value=True)
         ttk.Checkbutton(tb, text="Spec overlay", variable=self.var_spec,
                         command=self._toggle_overlay).pack(side=tk.LEFT, padx=10)
+
+        self.var_contact_size = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tb, text="Contact size", variable=self.var_contact_size,
+                        command=self._toggle_contact_size).pack(side=tk.LEFT, padx=6)
+
+        ttk.Separator(tb, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        ttk.Label(tb, text="Pressure").pack(side=tk.LEFT)
+        self.var_pressure_src = tk.StringVar(value=PRESSURE_OFF)
+        ttk.Combobox(tb, textvariable=self.var_pressure_src, width=14,
+                     state="readonly",
+                     values=[PRESSURE_OFF, PRESSURE_HID, PRESSURE_AREA]).pack(
+            side=tk.LEFT, padx=(2, 8))
+
+        ttk.Label(tb, text="Window s").pack(side=tk.LEFT)
+        self.var_window = tk.StringVar()
+        ttk.Entry(tb, textvariable=self.var_window, width=5).pack(side=tk.LEFT, padx=(2, 6))
 
         # status bar
         sb = ttk.Frame(self, padding=(10, 4))
@@ -262,6 +286,16 @@ class PTPMetricsApp(tk.Tk):
             return ((c.x - dev.x_logical_min) / dev.x_counts_per_mm,
                     (c.y - dev.y_logical_min) / dev.y_counts_per_mm)
         return c.x, c.y
+
+    def _disp_size(self, dev: DeviceInfo, c) -> Optional[Tuple[float, float]]:
+        """Contact (width, height) in display units, or None if unavailable."""
+        if c.width is None and c.height is None:
+            return None
+        w = c.width or 0.0
+        h = c.height or 0.0
+        if self._unit == "mm" and dev.x_counts_per_mm and dev.y_counts_per_mm:
+            return (w / dev.x_counts_per_mm, h / dev.y_counts_per_mm)
+        return (w, h)
 
     # ------------------------------------------------------------------ live
     def toggle_live(self):
@@ -462,11 +496,36 @@ class PTPMetricsApp(tk.Tk):
         self._reset_view()
         self.scan_chart.update_series([])
         self.count_chart.update_series([])
+        self._pressure_readout = None
         self._render_metrics(None, 0)
         self.status.set("Cleared.")
 
     def _toggle_overlay(self):
         self.view.set_spec_overlay(self.var_spec.get())
+
+    def _toggle_contact_size(self):
+        self.view.set_contact_size_mode(self.var_contact_size.get())
+        # rebuild so existing markers pick up the new sizing immediately
+        self._rebuild_trace()
+
+    def _window_seconds(self) -> Optional[float]:
+        """Rolling-window length in seconds, or None to keep everything."""
+        s = self.var_window.get().strip()
+        if not s:
+            return None
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        return v if v > 0 else None
+
+    @staticmethod
+    def _frame_time_s(f) -> Optional[float]:
+        if f.host_timestamp is not None:
+            return float(f.host_timestamp)
+        if f.scan_time is not None:
+            return float(f.scan_time) * 100e-6  # 100us units -> seconds
+        return None
 
     # ------------------------------------------------------------------ save/load
     def _current_recording(self) -> Optional[Recording]:
@@ -475,7 +534,32 @@ class PTPMetricsApp(tk.Tk):
             return None
         if self._loaded is not None and not self._live:
             return self._loaded
+        frames = self._window_slice(frames)
         return Recording(device=dev, frames=list(frames), source="live")
+
+    def _window_slice(self, frames):
+        """Return only the frames within the rolling window (live only)."""
+        if not self._live:
+            return frames
+        w = self._window_seconds()
+        if w is None:
+            return frames
+        return self._slice_by_window(frames, w, self._frame_time_s)
+
+    @staticmethod
+    def _slice_by_window(frames, w, time_fn):
+        """Tail of ``frames`` whose timestamp is within ``w`` seconds of the last."""
+        if w is None or len(frames) < 2:
+            return frames
+        t_last = time_fn(frames[-1])
+        if t_last is None:
+            return frames
+        cutoff = t_last - w
+        for i in range(len(frames)):
+            ts = time_fn(frames[i])
+            if ts is not None and ts >= cutoff:
+                return frames[i:]
+        return frames[-1:]
 
     def save_csv(self):
         rec = self._current_recording()
@@ -522,8 +606,9 @@ class PTPMetricsApp(tk.Tk):
 
     def open_recording(self):
         path = filedialog.askopenfilename(
-            title="Open recording (CSV / JSONL / ptrecorder file)",
-            filetypes=[("Recordings", "*.csv *.tsv *.txt *.log *.jsonl"),
+            title="Open recording (CSV / JSONL / DigiInfo XML / ptrecorder file)",
+            filetypes=[("Recordings", "*.csv *.tsv *.txt *.log *.jsonl *.xml"),
+                       ("DigiInfo XML", "*.xml"),
                        ("All files", "*.*")])
         if not path:
             return
@@ -538,11 +623,18 @@ class PTPMetricsApp(tk.Tk):
             messagebox.showerror("Open recording", f"Failed:\n{e}")
 
     def _load_any(self, path: str) -> Recording:
-        from .loaders import load_csv, load_ptrecorder_dir, infer_logical_range
+        from .loaders import (load_csv, load_ptrecorder_dir, infer_logical_range,
+                              load_digiinfo_xml, is_digiinfo_xml)
         dev = DeviceInfo()
         self._apply_size_override(dev)
         if path.lower().endswith(".jsonl"):
             rec = self._load_jsonl(path, dev)
+        elif path.lower().endswith(".xml") or is_digiinfo_xml(path):
+            # DigiInfo XML carries its own device resolution; don't clobber it
+            # with a blank size unless the user typed an override.
+            xdev = dev if (dev.x_physical_mm or dev.y_physical_mm) else None
+            rec = load_digiinfo_xml(path, xdev)
+            return rec
         else:
             try:
                 rec = load_csv(path, dev)
@@ -616,7 +708,13 @@ class PTPMetricsApp(tk.Tk):
             return
         # process up to a cap per tick to stay responsive on big offline loads
         end = min(n, self._cursor + 5000)
-        for i in range(self._cursor, end):
+        self._render_range(frames, dev, self._cursor, end)
+        self._cursor = end
+
+    def _render_range(self, frames, dev, start, end):
+        """Draw frames[start:end] incrementally onto the touchpad view."""
+        size_mode = self.var_contact_size.get()
+        for i in range(start, end):
             f = frames[i]
             present: Set[int] = set()
             for c in f.active_contacts:
@@ -624,7 +722,8 @@ class PTPMetricsApp(tk.Tk):
                 x, y = self._disp_xy(dev, c)
                 last = self._open_strokes.get(c.contact_id)
                 new_stroke = last is None or (f.index - last) > 1
-                self.view.add_point(c.contact_id, x, y, new_stroke)
+                size_wh = self._disp_size(dev, c) if size_mode else None
+                self.view.add_point(c.contact_id, x, y, new_stroke, size_wh)
                 self._open_strokes[c.contact_id] = f.index
             # lift detection: any open contact missing from this frame
             for cid in list(self._open_strokes.keys()):
@@ -632,9 +731,55 @@ class PTPMetricsApp(tk.Tk):
                     self.view.end_stroke(cid)
                     self.view.hide_marker(cid)
                     del self._open_strokes[cid]
-        self._cursor = end
+
+    def _rebuild_trace(self):
+        """Clear and redraw the whole trace from the current buffer (used after a
+        rolling-window trim or a contact-size toggle)."""
+        frames, dev = self._source()
+        self.view.clear()
+        self._open_strokes.clear()
+        if dev is None or not frames:
+            self._cursor = 0
+            return
+        if not self._ensure_bounds(dev) or not self.view.is_ready():
+            # can't draw yet; let the normal render loop pick these up later
+            self._cursor = 0
+            return
+        self._render_range(frames, dev, 0, len(frames))
+        self._cursor = len(frames)
+
+    def _apply_rolling_window(self):
+        """Drop live-buffer frames older than the rolling window (frees memory and
+        keeps metrics bounded). No-op when the window is unset or not live."""
+        if not (self._live and self._cap is not None):
+            return
+        w = self._window_seconds()
+        if w is None:
+            return
+        frames = self._cap.frames
+        if len(frames) < 2:
+            return
+        t_last = self._frame_time_s(frames[-1])
+        t_first = self._frame_time_s(frames[0])
+        if t_last is None or t_first is None:
+            return
+        cutoff = t_last - w
+        # hysteresis: only trim once we're >1 s past the window, to avoid churn
+        if cutoff - t_first < 1.0:
+            return
+        keep_from = 0
+        for i, f in enumerate(frames):
+            ts = self._frame_time_s(f)
+            if ts is not None and ts >= cutoff:
+                keep_from = i
+                break
+        if keep_from <= 0:
+            return
+        del frames[:keep_from]
+        self._rebuild_trace()
 
     def _update_metrics_and_charts(self):
+        self._apply_rolling_window()
         rec = self._current_recording()
         if rec is None or not rec.frames:
             return
@@ -645,9 +790,36 @@ class PTPMetricsApp(tk.Tk):
         self.count_chart.update_series(ct.contact_count_series or [])
         report = M.compute_all(rec)
         self._last_report = report
+        self._pressure_readout = self._compute_pressure(rec)
         ev = SPEC.evaluate(rec, report)
         self._render_spec(ev)
         self._render_metrics(report, len(rec.frames))
+
+    def _compute_pressure(self, rec: Recording) -> Optional[str]:
+        """Latest pressure readout string per the selected source, or None."""
+        src = self.var_pressure_src.get()
+        if src == PRESSURE_OFF or not rec.frames:
+            return None
+        for f in reversed(rec.frames[-60:]):
+            acs = f.active_contacts
+            if not acs:
+                continue
+            if src == PRESSURE_HID:
+                vals = [c.pressure for c in acs if c.pressure is not None]
+                if vals:
+                    return f"{max(vals):.0f} (HID)"
+                return "n/a (device has no HID pressure)"
+            else:  # contact area proxy
+                areas = [(c.width or 0.0) * (c.height or 0.0) for c in acs]
+                areas = [a for a in areas if a > 0]
+                if areas:
+                    dev = rec.device
+                    if dev.x_counts_per_mm and dev.y_counts_per_mm:
+                        mm2 = max(areas) / (dev.x_counts_per_mm * dev.y_counts_per_mm)
+                        return f"{mm2:.1f} mm² area"
+                    return f"{max(areas):.0f} area"
+                return "n/a (no width/height)"
+        return None
 
     def _render_spec(self, ev: SPEC.SpecEvaluation):
         colors = {SPEC.PASS: GOOD, SPEC.FAIL: BAD, SPEC.UNKNOWN: "#475569"}
@@ -698,6 +870,11 @@ class PTPMetricsApp(tk.Tk):
             f"timing jitter {_fmt(tim.timing_jitter_ms,' ms',3)}",
             f"clock         {tim.source}",
         ]
+        win = self._window_seconds()
+        if win is not None:
+            lines.append(f"window        {win:g} s (rolling)")
+        if self._pressure_readout is not None:
+            lines.append(f"pressure      {self._pressure_readout}")
         self.meas.insert(tk.END, "\n".join(lines))
         self.meas.configure(state=tk.DISABLED)
         self._render_dropout_flag(cont)

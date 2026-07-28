@@ -92,6 +92,35 @@ def main():
     assert not app.view._all_line_ids and app._cursor == 0
     print("PASS clear empties view + cursor")
 
+    # contact-size marker mode: reload, enable, rebuild — no crash and traces drawn
+    app._loaded = rec
+    app.view._cw, app.view._ch = 800, 400
+    app.update_idletasks()
+    app.var_contact_size.set(True)
+    app._toggle_contact_size()
+    for _ in range(6):
+        app._render_new_frames()
+        app.update_idletasks()
+    assert app.view._contact_size_mode is True
+    assert app.view._all_line_ids, "contact-size mode drew no strokes"
+    print("PASS contact-size marker mode")
+
+    # rolling window: a 0.5 s window keeps far fewer frames than the full record
+    app.var_window.set("0.5")
+    assert app._window_seconds() == 0.5
+    full = app._loaded.frames
+    sliced = app._slice_by_window(full, 0.5, app._frame_time_s)
+    assert len(sliced) < len(full), f"window did not trim ({len(sliced)} vs {len(full)})"
+    print(f"PASS rolling window slice: {len(sliced)}/{len(full)} frames kept")
+    app.var_window.set("")
+
+    # pressure readout: contact-area proxy from synthetic width/height
+    app.var_pressure_src.set(gmod.PRESSURE_AREA)
+    ro = app._compute_pressure(app._loaded)
+    assert ro is not None and "mm" in ro, f"unexpected pressure readout: {ro}"
+    print(f"PASS pressure readout (area): {ro}")
+    app.var_pressure_src.set(gmod.PRESSURE_OFF)
+
     app._on_close()
     print("\nGUI smoke test passed.")
     return 0

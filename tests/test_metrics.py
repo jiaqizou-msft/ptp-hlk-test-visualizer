@@ -92,6 +92,45 @@ def test_csv_roundtrip():
         assert abs((r1.timing.report_rate_hz or 0) - (r2.timing.report_rate_hz or 0)) < 1.0
 
 
+def test_digiinfo_xml_loads():
+    from ptp_metrics.loaders import load_digiinfo_xml, is_digiinfo_xml
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<inputmanager version="1.0" source="DigiInfo">\n'
+        '  <digitizers>\n'
+        '    <digitizer id="1" name="Test PTP" maxcsrs="5">\n'
+        '      <properties>\n'
+        '        <property name="x" logmin="0" logmax="32767" res="1192.83" unit="cm" />\n'
+        '        <property name="y" logmin="0" logmax="32767" res="1789.57" unit="cm" />\n'
+        '        <property name="contactid" logmin="0" logmax="1" res="0" unit="cm" />\n'
+        '      </properties>\n'
+        '    </digitizer>\n'
+        '  </digitizers>\n'
+        '  <events>\n'
+        '    <packet x="1000" y="1200" down="true" confidence="true" contactid="0" '
+        'scantime="100" time="1000" width="120" height="130" />\n'
+        '    <packet x="1002" y="1201" down="true" confidence="true" contactid="0" '
+        'scantime="170" time="1007" width="120" height="130" />\n'
+        '    <packet x="1001" y="1203" down="true" confidence="true" contactid="0" '
+        'scantime="240" time="1014" width="122" height="131" />\n'
+        '  </events>\n'
+        '</inputmanager>\n'
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "sample.xml")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(xml)
+        assert is_digiinfo_xml(p)
+        rec = load_digiinfo_xml(p)
+        assert len(rec.frames) == 3
+        assert rec.device.width_mm and rec.device.width_mm > 0
+        assert rec.device.x_counts_per_mm is not None
+        c0 = rec.frames[0].contacts[0]
+        assert c0.width == 120 and c0.height == 130
+        report = M.compute_all(rec)
+        assert report.timing.report_rate_hz is not None
+
+
 def test_hid_descriptor_resolution():
     # Minimal descriptor fragment: X axis, logical 0..4095, physical 0..108, unit exp -1 (mm? cm default)
     # Generic Desktop (0x05 0x01), Usage X (0x09 0x30),

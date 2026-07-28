@@ -73,10 +73,13 @@ python -m ptp_metrics gui
 | **Clear** | Wipe display and capture buffer (works mid-session) |
 | **Save CSV…** | Export contact trace data in canonical schema |
 | **Save Report…** | Generate PNG dashboard + JSON report with embedded spec evaluations |
-| **Open Recording…** | Load and replay CSV, JSONL, or ptrecorder folder exports offline |
+| **Open Recording…** | Load and replay CSV, JSONL, DigiInfo XML, or ptrecorder folder exports offline |
 | **Spec Checks Panel** | Live PASS/FAIL verdicts against Microsoft thresholds |
 | **W/H mm + Apply** | Set touchpad physical dimensions for metric calculations |
 | **Spec Overlay** | Toggle grid lines and threshold visualization |
+| **Contact size** | Draw each live contact as an ellipse scaled to its reported width/height — e.g. a palm shows its true footprint instead of a dot |
+| **Pressure** | Dropdown selecting the pressure source: `Off`, `HID Pressure` (force-haptic pads that report HID Tip Pressure), or `Contact area (W×H)` (proxy for ordinary pads). The current value is shown in the metrics panel |
+| **Window s** | Rolling-window length in seconds. When set, all metrics (including stationary jitter peak-to-peak and mean) are computed over only the last N seconds and older samples are discarded to bound memory. Leave blank to keep everything |
 
 ### Performance Architecture
 
