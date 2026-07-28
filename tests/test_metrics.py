@@ -131,6 +131,68 @@ def test_digiinfo_xml_loads():
         assert report.timing.report_rate_hz is not None
 
 
+def test_gesture_recognition():
+    from ptp_metrics import gestures as GEST
+    from ptp_metrics.models import Contact, DeviceInfo, Frame, Recording
+
+    dev = DeviceInfo(name="G", x_logical_min=0, x_logical_max=10000,
+                     y_logical_min=0, y_logical_max=6000,
+                     x_physical_mm=100.0, y_physical_mm=60.0)
+    cpm = dev.x_counts_per_mm  # 100 counts/mm
+
+    def make(frames_xy_by_cid, dt=0.007):
+        frames = []
+        for i, contacts in enumerate(frames_xy_by_cid):
+            cs = [Contact(contact_id=cid, x=x, y=y, tip=True)
+                  for cid, (x, y) in contacts.items()]
+            frames.append(Frame(index=i, scan_time=None, contacts=cs,
+                                contact_count=len(cs), host_timestamp=i * dt))
+        return Recording(device=dev, frames=frames, source="synthetic")
+
+    tfn = lambda f: f.host_timestamp
+
+    # 1-finger swipe right: x grows by 40 mm
+    seq = [{0: (1000 + int(k * 40 * cpm / 30), 3000)} for k in range(31)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Swipe right", g.name
+    assert g.n_fingers == 1
+
+    # 1-finger swipe up: y decreases
+    seq = [{0: (3000, 3000 - int(k * 40 * cpm / 30))} for k in range(31)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Swipe up", g.name
+
+    # two-finger scroll down: both fingers move +y together
+    seq = [{0: (2000, 2000 + int(k * 30 * cpm / 30)),
+            1: (2600, 2000 + int(k * 30 * cpm / 30))} for k in range(31)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Two-finger scroll down", g.name
+    assert g.n_fingers == 2
+
+    # pinch zoom in: two fingers separate
+    seq = [{0: (3000 - int(k * 20 * cpm / 30), 3000),
+            1: (3000 + int(k * 20 * cpm / 30), 3000)} for k in range(31)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Pinch zoom in", g.name
+
+    # three-finger swipe left
+    seq = [{0: (4000 - int(k * 30 * cpm / 30), 2000),
+            1: (4000 - int(k * 30 * cpm / 30), 2600),
+            2: (4000 - int(k * 30 * cpm / 30), 3200)} for k in range(31)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "3-finger swipe left", g.name
+
+    # tap: single brief stationary contact
+    seq = [{0: (3000, 3000)} for _ in range(3)]
+    g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Tap", g.name
+
+    # press & hold: single stationary contact, sustained
+    seq = [{0: (3000, 3000)} for _ in range(80)]
+    g = GEST.recognize(make(seq).frames, dev, window_s=2.0, time_fn=tfn)
+    assert g.name == "Press & hold", g.name
+
+
 def test_hid_descriptor_resolution():
     # Minimal descriptor fragment: X axis, logical 0..4095, physical 0..108, unit exp -1 (mm? cm default)
     # Generic Desktop (0x05 0x01), Usage X (0x09 0x30),

@@ -29,6 +29,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from . import metrics as M
 from . import spec as SPEC
+from . import gestures as GEST
 from .models import Recording, DeviceInfo
 from .export import export_csv
 from .fastview import TouchpadView, StripChart, Sparkbars, color_for
@@ -46,10 +47,9 @@ BAD = "#ef4444"
 WARN = "#f59e0b"
 
 # pressure-source options (force-haptic pads report HID Tip Pressure; ordinary
-# pads don't, so a contact-area proxy is offered instead)
+# pads don't report pressure at all)
 PRESSURE_OFF = "Off"
 PRESSURE_HID = "HID Pressure"
-PRESSURE_AREA = "Contact area (W×H)"
 
 
 def _fmt(v, unit="", nd=3):
@@ -131,6 +131,7 @@ class PTPMetricsApp(tk.Tk):
 
         ttk.Button(tb, text="Save CSV…", command=self.save_csv).pack(side=tk.LEFT, padx=3)
         ttk.Button(tb, text="Save Report…", command=self.save_report).pack(side=tk.LEFT, padx=3)
+        ttk.Button(tb, text="Save All…", command=self.save_all).pack(side=tk.LEFT, padx=3)
         ttk.Button(tb, text="Open Recording…", command=self.open_recording).pack(side=tk.LEFT, padx=3)
 
         ttk.Separator(tb, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
@@ -147,17 +148,13 @@ class PTPMetricsApp(tk.Tk):
         ttk.Checkbutton(tb, text="Spec overlay", variable=self.var_spec,
                         command=self._toggle_overlay).pack(side=tk.LEFT, padx=10)
 
-        self.var_contact_size = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tb, text="Contact size", variable=self.var_contact_size,
-                        command=self._toggle_contact_size).pack(side=tk.LEFT, padx=6)
-
         ttk.Separator(tb, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
         ttk.Label(tb, text="Pressure").pack(side=tk.LEFT)
         self.var_pressure_src = tk.StringVar(value=PRESSURE_OFF)
         pcombo = ttk.Combobox(tb, textvariable=self.var_pressure_src, width=14,
                               state="readonly",
-                              values=[PRESSURE_OFF, PRESSURE_HID, PRESSURE_AREA])
+                              values=[PRESSURE_OFF, PRESSURE_HID])
         pcombo.pack(side=tk.LEFT, padx=(2, 8))
         pcombo.bind("<<ComboboxSelected>>", lambda e: self._on_pressure_change())
 
@@ -244,6 +241,21 @@ class PTPMetricsApp(tk.Tk):
             wraplength=340)
         self._dropout_label.pack(anchor=tk.W, fill=tk.X, padx=14, pady=(8, 0))
 
+        # live gesture recognition
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12, pady=(10, 6))
+        grow = tk.Frame(parent, bg=PANEL)
+        grow.pack(fill=tk.X, padx=14)
+        tk.Label(grow, text="Gesture:", bg=PANEL, fg=MUTED,
+                 font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        self.gesture_var = tk.StringVar(value="—")
+        self._gesture_label = tk.Label(grow, textvariable=self.gesture_var, bg=PANEL,
+                                       fg=ACCENT, font=("Segoe UI", 12, "bold"),
+                                       anchor="w")
+        self._gesture_label.pack(side=tk.LEFT, padx=(8, 0))
+        self.gesture_detail_var = tk.StringVar(value="")
+        tk.Label(parent, textvariable=self.gesture_detail_var, bg=PANEL, fg=MUTED,
+                 font=("Consolas", 9), anchor="w").pack(anchor=tk.W, padx=14)
+
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12, pady=10)
         ttk.Label(parent, text="Measurements", style="Head.TLabel").pack(
             anchor=tk.W, padx=14, pady=(0, 4))
@@ -293,16 +305,6 @@ class PTPMetricsApp(tk.Tk):
             return ((c.x - dev.x_logical_min) / dev.x_counts_per_mm,
                     (c.y - dev.y_logical_min) / dev.y_counts_per_mm)
         return c.x, c.y
-
-    def _disp_size(self, dev: DeviceInfo, c) -> Optional[Tuple[float, float]]:
-        """Contact (width, height) in display units, or None if unavailable."""
-        if c.width is None and c.height is None:
-            return None
-        w = c.width or 0.0
-        h = c.height or 0.0
-        if self._unit == "mm" and dev.x_counts_per_mm and dev.y_counts_per_mm:
-            return (w / dev.x_counts_per_mm, h / dev.y_counts_per_mm)
-        return (w, h)
 
     # ------------------------------------------------------------------ live
     def toggle_live(self):
@@ -505,24 +507,13 @@ class PTPMetricsApp(tk.Tk):
         self.scan_chart.update_series([])
         self.count_chart.update_series([])
         self._pressure_readout = None
+        self.gesture_var.set("—")
+        self.gesture_detail_var.set("")
         self._render_metrics(None, 0)
         self.status.set("Cleared.")
 
     def _toggle_overlay(self):
         self.view.set_spec_overlay(self.var_spec.get())
-
-    def _toggle_contact_size(self):
-        on = self.var_contact_size.get()
-        self.view.set_contact_size_mode(on)
-        # rebuild so existing markers pick up the new sizing immediately
-        self._rebuild_trace()
-        if on and not self._buffer_has_size():
-            self.status.set("Contact size ON — but this data has no width/height "
-                            "(needs a device/capture that reports contact size).")
-        elif on:
-            self.status.set("Contact size ON — markers scaled to reported W×H.")
-        else:
-            self.status.set("Contact size off.")
 
     def _on_pressure_change(self):
         src = self.var_pressure_src.get()
@@ -533,9 +524,6 @@ class PTPMetricsApp(tk.Tk):
         if src == PRESSURE_HID and not self._buffer_has_pressure():
             self.status.set("Pressure = HID selected — but this data has no HID "
                             "pressure (typical for non-force-haptic pads).")
-        elif src == PRESSURE_AREA and not self._buffer_has_size():
-            self.status.set("Pressure = Contact area selected — but this data has "
-                            "no width/height to compute area from.")
         else:
             self.status.set(f"Pressure source: {src}.")
 
@@ -546,14 +534,6 @@ class PTPMetricsApp(tk.Tk):
         else:
             self.status.set(f"Averaging window: last {w:g} s "
                             "(older samples discarded).")
-
-    def _buffer_has_size(self) -> bool:
-        frames, _ = self._source()
-        for f in (frames or [])[-200:]:
-            for c in f.active_contacts:
-                if c.width or c.height:
-                    return True
-        return False
 
     def _buffer_has_pressure(self) -> bool:
         frames, _ = self._source()
@@ -658,6 +638,69 @@ class PTPMetricsApp(tk.Tk):
             self.status.set(f"Report → {os.path.basename(path)} + .json")
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Save Report", f"Failed:\n{e}")
+
+    def save_all(self):
+        """One-click: write CSV + PNG/JSON report (and finalize the screen video
+        if one is recording) to a chosen folder with a common base name."""
+        rec = self._current_recording()
+        if rec is None or not rec.frames:
+            messagebox.showinfo("Save All", "No data to save yet.")
+            return
+        folder = filedialog.askdirectory(title="Save All — choose an output folder")
+        if not folder:
+            return
+        base = f"ptp_{datetime.now():%Y%m%d_%H%M%S}"
+        stem = os.path.join(folder, base)
+        written = []
+        errors = []
+
+        # 1) CSV
+        try:
+            export_csv(rec, stem + ".csv")
+            written.append(os.path.basename(stem + ".csv"))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"CSV: {e}")
+
+        # 2) PNG dashboard + JSON report
+        try:
+            import json
+            from . import dashboard
+            report = M.compute_all(rec)
+            dashboard.show_report(rec, report, save_path=stem + ".png")
+            payload = report.to_dict()
+            payload["spec"] = [c.__dict__ for c in SPEC.evaluate(rec, report).checks]
+            with open(stem + ".json", "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, default=str)
+            written.append(os.path.basename(stem + ".png"))
+            written.append(os.path.basename(stem + ".json"))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Report: {e}")
+
+        # 3) Video — finalize an in-progress recording into this folder
+        if self._screenrec is not None:
+            try:
+                self._stop_video()
+                if self._video_path and os.path.exists(self._video_path):
+                    dst = stem + ".mp4"
+                    try:
+                        import shutil
+                        shutil.copy2(self._video_path, dst)
+                        written.append(os.path.basename(dst))
+                    except Exception:
+                        written.append(os.path.basename(self._video_path))
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"Video: {e}")
+
+        msg = "Saved: " + ", ".join(written) if written else "Nothing written."
+        if errors:
+            msg += "\nErrors: " + "; ".join(errors)
+        self.status.set(f"Save All → {folder}  ({len(written)} file(s))")
+        if errors:
+            messagebox.showwarning("Save All", msg)
+        else:
+            note = "" if self._screenrec is not None or ".mp4" in " ".join(written) \
+                else "\n(No video: start 'Rec Video' before Save All to include one.)"
+            messagebox.showinfo("Save All", msg + note)
 
     def open_recording(self):
         path = filedialog.askopenfilename(
@@ -768,7 +811,6 @@ class PTPMetricsApp(tk.Tk):
 
     def _render_range(self, frames, dev, start, end):
         """Draw frames[start:end] incrementally onto the touchpad view."""
-        size_mode = self.var_contact_size.get()
         for i in range(start, end):
             f = frames[i]
             present: Set[int] = set()
@@ -777,8 +819,7 @@ class PTPMetricsApp(tk.Tk):
                 x, y = self._disp_xy(dev, c)
                 last = self._open_strokes.get(c.contact_id)
                 new_stroke = last is None or (f.index - last) > 1
-                size_wh = self._disp_size(dev, c) if size_mode else None
-                self.view.add_point(c.contact_id, x, y, new_stroke, size_wh)
+                self.view.add_point(c.contact_id, x, y, new_stroke)
                 self._open_strokes[c.contact_id] = f.index
             # lift detection: any open contact missing from this frame
             for cid in list(self._open_strokes.keys()):
@@ -849,9 +890,22 @@ class PTPMetricsApp(tk.Tk):
         ev = SPEC.evaluate(rec, report)
         self._render_spec(ev)
         self._render_metrics(report, len(rec.frames))
+        self._render_gesture(rec)
+
+    def _render_gesture(self, rec: Recording):
+        """Classify and display the current gesture (live) in the panel."""
+        # only meaningful for live capture / recent motion
+        try:
+            g = GEST.recognize(rec.frames, rec.device, window_s=1.2,
+                               time_fn=self._frame_time_s)
+        except Exception:
+            g = GEST.GestureResult()
+        self.gesture_var.set(g.name)
+        self.gesture_detail_var.set(g.detail)
+        self._gesture_label.configure(fg=ACCENT if g.name != "—" else MUTED)
 
     def _compute_pressure(self, rec: Recording) -> Optional[str]:
-        """Latest pressure readout string per the selected source, or None."""
+        """Latest HID pressure readout string, or None."""
         src = self.var_pressure_src.get()
         if src == PRESSURE_OFF or not rec.frames:
             return None
@@ -859,21 +913,10 @@ class PTPMetricsApp(tk.Tk):
             acs = f.active_contacts
             if not acs:
                 continue
-            if src == PRESSURE_HID:
-                vals = [c.pressure for c in acs if c.pressure is not None]
-                if vals:
-                    return f"{max(vals):.0f} (HID)"
-                return "n/a (device has no HID pressure)"
-            else:  # contact area proxy
-                areas = [(c.width or 0.0) * (c.height or 0.0) for c in acs]
-                areas = [a for a in areas if a > 0]
-                if areas:
-                    dev = rec.device
-                    if dev.x_counts_per_mm and dev.y_counts_per_mm:
-                        mm2 = max(areas) / (dev.x_counts_per_mm * dev.y_counts_per_mm)
-                        return f"{mm2:.1f} mm² area"
-                    return f"{max(areas):.0f} area"
-                return "n/a (no width/height)"
+            vals = [c.pressure for c in acs if c.pressure is not None]
+            if vals:
+                return f"{max(vals):.0f} (HID)"
+            return "n/a (device has no HID pressure)"
         return None
 
     def _render_spec(self, ev: SPEC.SpecEvaluation):

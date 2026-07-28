@@ -73,13 +73,14 @@ python -m ptp_metrics gui
 | **Clear** | Wipe display and capture buffer (works mid-session) |
 | **Save CSV…** | Export contact trace data in canonical schema |
 | **Save Report…** | Generate PNG dashboard + JSON report with embedded spec evaluations |
+| **Save All…** | One click: write the CSV, the PNG+JSON report, and finalize the screen video (if one is recording) into a chosen folder with a shared base name |
 | **Open Recording…** | Load and replay CSV, JSONL, DigiInfo XML, or ptrecorder folder exports offline |
 | **Spec Checks Panel** | Live PASS/FAIL verdicts against Microsoft thresholds |
+| **Gesture (live)** | Real-time gesture recognition shown in the metrics panel — tap, press & hold, 1/3/4-finger swipe (with direction), two-finger scroll, and pinch zoom in/out |
 | **W/H mm + Apply** | Set touchpad physical dimensions for metric calculations |
 | **Spec Overlay** | Toggle grid lines and threshold visualization |
-| **Contact size** | Draw each live contact as an ellipse scaled to its reported width/height — e.g. a palm shows its true footprint instead of a dot |
-| **Pressure** | Dropdown selecting the pressure source: `Off`, `HID Pressure` (force-haptic pads that report HID Tip Pressure), or `Contact area (W×H)` (proxy for ordinary pads). The current value is shown in the metrics panel |
-| **Window s** | Rolling-window length in seconds. When set, all metrics (including stationary jitter peak-to-peak and mean) are computed over only the last N seconds and older samples are discarded to bound memory. Leave blank to keep everything |
+| **Pressure** | Dropdown selecting the pressure source: `Off` or `HID Pressure` (force-haptic pads that report HID Tip Pressure). The current value is shown in the metrics panel |
+| **Avg window** | Rolling-window length in seconds. When set, all metrics (including stationary jitter peak-to-peak and mean) are computed over only the last N seconds and older samples are discarded to bound memory. Leave blank to keep everything |
 
 ### Performance Architecture
 

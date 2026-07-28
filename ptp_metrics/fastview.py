@@ -74,7 +74,6 @@ class TouchpadView(tk.Canvas):
         self._show_grid = True
         self._spec_overlay = False
         self._grid_mm = 5.0
-        self._contact_size_mode = False
         self.bind("<Configure>", self._on_resize)
 
     # ---- configuration ---------------------------------------------------- #
@@ -91,11 +90,6 @@ class TouchpadView(tk.Canvas):
     def set_spec_overlay(self, on: bool):
         self._spec_overlay = on
         self.redraw_background()
-
-    def set_contact_size_mode(self, on: bool):
-        """When on, the live marker is drawn as an ellipse sized to the contact's
-        reported width/height (e.g. a palm shows its true footprint)."""
-        self._contact_size_mode = bool(on)
 
     def is_ready(self) -> bool:
         """True once the data->pixel transform is valid (canvas has a size)."""
@@ -158,14 +152,8 @@ class TouchpadView(tk.Canvas):
         self.tag_lower("bg")
 
     # ---- incremental update ---------------------------------------------- #
-    def add_point(self, contact_id: int, x: float, y: float, new_stroke: bool,
-                  size_wh: Optional[Tuple[float, float]] = None):
-        """Append a sample to a contact's current stroke (pixels computed here).
-
-        ``size_wh`` is the contact's (width, height) in the same data units as
-        the bounds (mm). When contact-size mode is on it draws the marker as an
-        ellipse of that footprint; otherwise a fixed dot is used.
-        """
+    def add_point(self, contact_id: int, x: float, y: float, new_stroke: bool):
+        """Append a sample to a contact's current stroke (pixels computed here)."""
         if not self._tf.ok:
             return
         px, py = self._tf.px(x, y)
@@ -184,27 +172,22 @@ class TouchpadView(tk.Canvas):
                 st["coords"] = st["coords"][-4000:]
             self.coords(st["id"], *st["coords"])
         # live marker + label
-        self._update_marker(contact_id, px, py, size_wh)
+        self._update_marker(contact_id, px, py)
 
-    def _update_marker(self, contact_id, px, py, size_wh=None):
+    def _update_marker(self, contact_id, px, py):
         col = color_for(contact_id)
-        if self._contact_size_mode and size_wh and self._tf.ok:
-            w, h = size_wh
-            rx = max(abs(w) * 0.5 * self._tf.sx, 4)
-            ry = max(abs(h) * 0.5 * self._tf.sy, 4)
-        else:
-            rx = ry = 6
+        r = 6
         mid = self._markers.get(contact_id)
         if mid is None:
-            mid = self.create_oval(px - rx, py - ry, px + rx, py + ry,
+            mid = self.create_oval(px - r, py - r, px + r, py + r,
                                    outline="white", width=2, fill=col)
             self._markers[contact_id] = mid
             self._labels[contact_id] = self.create_text(
-                px + rx + 3, py - ry - 3, text=f"{contact_id}", fill="white",
+                px + 9, py - 9, text=f"{contact_id}", fill="white",
                 font=("Segoe UI", 9, "bold"), anchor="w")
         else:
-            self.coords(mid, px - rx, py - ry, px + rx, py + ry)
-            self.coords(self._labels[contact_id], px + rx + 3, py - ry - 3)
+            self.coords(mid, px - r, py - r, px + r, py + r)
+            self.coords(self._labels[contact_id], px + 9, py - 9)
             self.itemconfig(mid, fill=col)
 
     def hide_marker(self, contact_id):
