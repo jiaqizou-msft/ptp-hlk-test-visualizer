@@ -13,10 +13,16 @@ reads the fields the Windows Precision Touchpad stack actually reports:
     capture picks those up from Raw Input (``RIM_TYPEMOUSE`` + ``RI_MOUSE_WHEEL``
     / ``RI_MOUSE_HWHEEL``) and passes them here, so scroll is reported straight
     from the OS, not inferred.
+  * **Palm rejection** compares the PTP contact against the OS **cursor motion**
+    (also from Raw Input). A palm generates PTP reports; if the OS cursor does
+    **not** move, the stack rejected it (success). If the cursor **does** move
+    while a palm is in contact, rejection failed. The palm itself is identified
+    from the HID **Confidence** bit (0 = device flags a non-finger contact) or an
+    unusually large contact footprint (Width/Height).
 
 Motion **direction** for swipes still uses the contact positions from the report
 (there is no HID field for "swipe direction"), but the *classification* (how
-many fingers, button, scroll) is taken from the report / OS.
+many fingers, button, scroll, palm) is taken from the report / OS.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ import numpy as np
 # A wheel event as seen from OS raw input: (timestamp_s, dx, dy) where dy>0 is a
 # scroll-down notch and dx>0 is scroll-right (in wheel-delta units / 120).
 WheelEvent = Tuple[float, float, float]
+# A cursor-move event from OS raw input: (timestamp_s, dx, dy) in mouse units.
+CursorEvent = Tuple[float, float, float]
 
 
 @dataclass
@@ -36,7 +44,7 @@ class GestureResult:
     name: str = "—"
     detail: str = ""
     n_fingers: int = 0
-    source: str = ""      # classification source: "HID", "OS wheel", ...
+    source: str = ""      # classification source: "HID", "OS wheel", "HID+OS", ...
 
 
 # thresholds
@@ -44,6 +52,8 @@ _MOVE_MM = 3.0          # min net travel (mm) to count a contact as "moving"
 _TAP_MAX_MM = 2.0       # max travel for a tap/hold
 _PINCH_MM = 4.0         # min spread change (mm) to call it a pinch
 _HOLD_S = 0.35          # min contact time to call a stationary touch a "hold"
+_PALM_MM = 13.0         # contact width/height (mm) above which it's palm-like
+_CURSOR_MOVE_PX = 4.0   # OS cursor travel (px) that counts as "the cursor moved"
 
 
 def _dir_name(dx: float, dy: float) -> str:
@@ -51,6 +61,45 @@ def _dir_name(dx: float, dy: float) -> str:
     if abs(dx) >= abs(dy):
         return "right" if dx > 0 else "left"
     return "down" if dy > 0 else "up"
+
+
+def _is_palm(c, cpm_x: Optional[float], cpm_y: Optional[float]) -> bool:
+    """A contact is palm-like if the device cleared its Confidence bit (it thinks
+    the contact is not an intentional finger) or the footprint is large."""
+    if not getattr(c, "confidence", True):
+        return True
+    if cpm_x and cpm_y:
+        w_mm = (c.width or 0.0) / cpm_x
+        h_mm = (c.height or 0.0) / cpm_y
+        if w_mm >= _PALM_MM or h_mm >= _PALM_MM:
+            return True
+    return False
+
+
+def _palm_state(frames, device) -> Tuple[bool, bool]:
+    """Return (palm_seen, finger_seen) across the window's active contacts."""
+    cpm_x = device.x_counts_per_mm if device and device.x_counts_per_mm else None
+    cpm_y = device.y_counts_per_mm if device and device.y_counts_per_mm else None
+    palm = finger = False
+    for f in frames:
+        for c in f.active_contacts:
+            if _is_palm(c, cpm_x, cpm_y):
+                palm = True
+            else:
+                finger = True
+    return palm, finger
+
+
+def _cursor_travel(cursor_events: Optional[Sequence[CursorEvent]],
+                   t_last: Optional[float], window_s: float) -> float:
+    """Total OS cursor travel (px) within the window."""
+    if not cursor_events:
+        return 0.0
+    total = 0.0
+    for (t, dx, dy) in cursor_events:
+        if t_last is None or t is None or (t_last - t) <= window_s:
+            total += float(np.hypot(dx, dy))
+    return total
 
 
 def _reported_finger_count(frames) -> int:
@@ -88,12 +137,14 @@ def _recent_wheel(wheel_events: Optional[Sequence[WheelEvent]],
 
 
 def recognize(frames, device, window_s: float = 1.2, time_fn=None,
-              wheel_events: Optional[Sequence[WheelEvent]] = None) -> GestureResult:
+              wheel_events: Optional[Sequence[WheelEvent]] = None,
+              cursor_events: Optional[Sequence[CursorEvent]] = None) -> GestureResult:
     """Classify the gesture in the most recent ``window_s`` seconds of ``frames``.
 
     ``wheel_events`` are OS-synthesized mouse wheel notches captured from Raw
-    Input (the OS's own recognition of a two-finger scroll). ``time_fn(frame)``
-    supplies timestamps for the window / hold heuristics.
+    Input (the OS's own recognition of a two-finger scroll). ``cursor_events``
+    are OS cursor-move deltas from Raw Input, used to judge palm rejection.
+    ``time_fn(frame)`` supplies timestamps for the window / hold heuristics.
     """
     if not frames:
         return GestureResult()
@@ -105,6 +156,24 @@ def recognize(frames, device, window_s: float = 1.2, time_fn=None,
                   if (time_fn(f) is None or time_fn(f) >= cut)]
     if not frames:
         return GestureResult()
+
+    # --- palm rejection: PTP contact vs OS cursor motion --------------------
+    palm_seen, finger_seen = _palm_state(frames, device)
+    if palm_seen and not finger_seen:
+        n_palm = _reported_finger_count(frames)
+        if cursor_events is None:
+            # no OS cursor data (e.g. offline recording): report detection only
+            return GestureResult("Palm detected",
+                                 "low-confidence / large contact", n_palm,
+                                 source="HID")
+        moved = _cursor_travel(cursor_events, t_last, window_s)
+        if moved >= _CURSOR_MOVE_PX:
+            return GestureResult("Palm NOT rejected",
+                                 f"palm contact moved cursor {moved:.0f}px",
+                                 n_palm, source="HID+OS")
+        return GestureResult("Palm rejected",
+                             "palm contact, cursor still", n_palm,
+                             source="HID+OS")
 
     # --- OS-synthesized scroll (hidclass -> PTP driver -> wheel) -------------
     wx, wy = _recent_wheel(wheel_events, t_last, window_s)

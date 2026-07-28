@@ -21,7 +21,7 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "PTPMetrics"
 ENTRY = os.path.join(HERE, "ptp_metrics_app.py")
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 def _run(cmd, **kw):

@@ -10,4 +10,4 @@ timing structure.
 from .models import Contact, Frame, DeviceInfo, Recording
 
 __all__ = ["Contact", "Frame", "DeviceInfo", "Recording"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"

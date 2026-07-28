@@ -202,6 +202,58 @@ def test_gesture_recognition():
     assert g.name == "Press & hold", g.name
 
 
+def test_palm_rejection():
+    from ptp_metrics import gestures as GEST
+    from ptp_metrics.models import Contact, DeviceInfo, Frame
+
+    dev = DeviceInfo(name="P", x_logical_min=0, x_logical_max=10000,
+                     y_logical_min=0, y_logical_max=6000,
+                     x_physical_mm=100.0, y_physical_mm=60.0)
+    tfn = lambda f: f.host_timestamp
+
+    def palm_frames(n=15):
+        # low-confidence (device-flagged palm) contact present each frame
+        return [Frame(index=i, scan_time=None,
+                      contacts=[Contact(0, 3000 + i, 3000, tip=True,
+                                        confidence=False)],
+                      contact_count=1, host_timestamp=i * 0.007)
+                for i in range(n)]
+
+    frames = palm_frames()
+    t_last = frames[-1].host_timestamp
+
+    # successful rejection: palm present, OS cursor did NOT move (empty list)
+    g = GEST.recognize(frames, dev, time_fn=tfn, cursor_events=[])
+    assert g.name == "Palm rejected", g.name
+    assert g.source == "HID+OS"
+
+    # failed rejection: palm present AND cursor moved
+    g = GEST.recognize(frames, dev, time_fn=tfn,
+                       cursor_events=[(t_last - 0.05, 12.0, 4.0)])
+    assert g.name == "Palm NOT rejected", g.name
+
+    # offline (no OS cursor data): report detection only
+    g = GEST.recognize(frames, dev, time_fn=tfn, cursor_events=None)
+    assert g.name == "Palm detected", g.name
+
+    # large contact footprint also counts as a palm (confident but big W/H)
+    big = [Frame(index=i, scan_time=None,
+                 contacts=[Contact(0, 3000, 3000, tip=True, confidence=True,
+                                   width=2000, height=2000)],
+                 contact_count=1, host_timestamp=i * 0.007) for i in range(12)]
+    g = GEST.recognize(big, dev, time_fn=tfn, cursor_events=[])
+    assert g.name == "Palm rejected", g.name
+
+    # a normal confident finger is NOT a palm even if the cursor moves
+    fing = [Frame(index=i, scan_time=None,
+                  contacts=[Contact(0, 3000 + i * 40, 3000, tip=True,
+                                    confidence=True, width=200, height=200)],
+                  contact_count=1, host_timestamp=i * 0.007) for i in range(20)]
+    g = GEST.recognize(fing, dev, time_fn=tfn,
+                       cursor_events=[(fing[-1].host_timestamp, 40.0, 0.0)])
+    assert g.name.startswith("Swipe"), g.name
+
+
 def test_logger_includes_gesture():
     from ptp_metrics.logger import StreamLogger
     from ptp_metrics.models import Contact, DeviceInfo, Frame, Recording

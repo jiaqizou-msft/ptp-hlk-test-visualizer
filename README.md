@@ -76,7 +76,7 @@ python -m ptp_metrics gui
 | **Save All…** | One click: write the CSV, the PNG+JSON report, and finalize the screen video (if one is recording) into a chosen folder with a shared base name |
 | **Open Recording…** | Load and replay CSV, JSONL, DigiInfo XML, or ptrecorder folder exports offline |
 | **Spec Checks Panel** | Live PASS/FAIL verdicts against Microsoft thresholds |
-| **Gesture (live)** | Real-time gesture recognition **grounded in the HID/PTP report** (finger count from the HID Contact Count field, click from the Button field) and the **OS** (two-finger scroll read from the mouse wheel events Windows synthesizes via `hidclass.sys` / the PTP driver). Shown in the metrics panel and **written into every logged row** (CSV `Gesture` column / JSONL `gesture` field) |
+| **Gesture (live)** | Real-time gesture recognition **grounded in the HID/PTP report** (finger count from the HID Contact Count field, click from the Button field) and the **OS** (two-finger scroll read from the mouse wheel events Windows synthesizes via `hidclass.sys` / the PTP driver). Includes **palm-rejection status**: a palm (HID Confidence bit cleared, or a large contact) that produces PTP reports but **no OS cursor motion** shows *Palm rejected* ✓; a palm that **moves the cursor** shows *Palm NOT rejected* ✗. Shown in the metrics panel and **written into every logged row** (CSV `Gesture` column / JSONL `gesture` field) |
 | **W/H mm + Apply** | Set touchpad physical dimensions for metric calculations |
 | **Spec Overlay** | Toggle grid lines and threshold visualization |
 | **Pressure** | Dropdown selecting the pressure source: `Off` or `HID Pressure` (force-haptic pads that report HID Tip Pressure). The current value is shown in the metrics panel |

@@ -894,22 +894,27 @@ class PTPMetricsApp(tk.Tk):
         self._render_gesture(rec)
 
     def _render_gesture(self, rec: Recording):
-        """Show the gesture recognized from the HID/PTP report (+ OS wheel)."""
-        wheel = None
+        """Show the gesture recognized from the HID/PTP report (+ OS wheel/cursor)."""
+        wheel = cursor = None
         if self._live and self._cap is not None:
             try:
                 wheel = self._cap.recent_wheel_events()
+                cursor = self._cap.recent_cursor_events()
             except Exception:
-                wheel = None
+                wheel = cursor = None
         try:
             g = GEST.recognize(rec.frames, rec.device, window_s=1.2,
-                               time_fn=self._frame_time_s, wheel_events=wheel)
+                               time_fn=self._frame_time_s, wheel_events=wheel,
+                               cursor_events=cursor)
         except Exception:
             g = GEST.GestureResult()
         self.gesture_var.set(g.name)
         src = f"[{g.source}] " if g.source else ""
         self.gesture_detail_var.set(f"{src}{g.detail}")
-        self._gesture_label.configure(fg=ACCENT if g.name != "—" else MUTED)
+        palm_fail = g.name == "Palm NOT rejected"
+        color = BAD if palm_fail else (GOOD if g.name == "Palm rejected"
+                                       else (ACCENT if g.name != "—" else MUTED))
+        self._gesture_label.configure(fg=color)
 
     def _compute_pressure(self, rec: Recording) -> Optional[str]:
         """Latest HID pressure readout string, or None."""

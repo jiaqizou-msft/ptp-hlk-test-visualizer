@@ -248,6 +248,10 @@ class LiveCapture:
         self._t0 = None
         # OS-synthesized scroll: (timestamp_s, dx, dy) wheel notches from Raw Input
         self._wheel_events = deque(maxlen=256)
+        # OS cursor motion: (timestamp_s, dx, dy) mouse-move deltas from Raw Input.
+        # Used to tell a successful palm rejection (contact present, cursor still)
+        # from a failed one (contact present *and* cursor moved).
+        self._cursor_events = deque(maxlen=512)
         # rolling frame window used to tag each frame with the current gesture
         self._recent = deque(maxlen=400)
         self._last_gesture = None
@@ -505,17 +509,24 @@ class LiveCapture:
         return out
 
     def _handle_mouse(self, buf) -> None:
-        """Record OS-synthesized wheel/hwheel notches (PTP two-finger scroll).
+        """Record OS-synthesized cursor motion + wheel notches.
 
-        The PTP driver / hidclass turns a two-finger drag into mouse wheel
-        events; we sink them here so the gesture layer can report the scroll the
-        OS itself recognized, rather than inferring it from geometry.
+        The PTP driver / hidclass turns finger motion into cursor movement and a
+        two-finger drag into mouse wheel events. We sink both from Raw Input so
+        the gesture layer can (a) report the scroll the OS recognized and
+        (b) tell whether a palm contact actually *moved the cursor* — the
+        difference between a successful and a failed palm rejection.
         """
         try:
             rim = C.cast(buf, C.POINTER(RAWINPUTMOUSE)).contents
             flags = rim.mouse.u.btn.usButtonFlags
             data = rim.mouse.u.btn.usButtonData  # signed
             t = time.perf_counter()
+            # cursor movement (relative deltas; touchpad cursor is relative)
+            dx = int(rim.mouse.lLastX)
+            dy = int(rim.mouse.lLastY)
+            if dx or dy:
+                self._cursor_events.append((t, float(dx), float(dy)))
             if flags & RI_MOUSE_WHEEL:
                 # wheel up (data>0) scrolls content up => "scroll up" (dy<0)
                 self._wheel_events.append((t, 0.0, -data / WHEEL_DELTA))
@@ -525,7 +536,7 @@ class LiveCapture:
             pass
 
     def _tag_gesture(self, frame: Frame) -> None:
-        """Stamp ``frame.gesture`` from the HID report + OS wheel (throttled)."""
+        """Stamp ``frame.gesture`` from the HID report + OS wheel/cursor (throttled)."""
         self._recent.append(frame)
         now = time.perf_counter()
         # recompute at most ~20x/sec; reuse the label in between
@@ -534,7 +545,8 @@ class LiveCapture:
                 g = _gestures.recognize(
                     list(self._recent), self.device, window_s=1.2,
                     time_fn=lambda f: f.host_timestamp,
-                    wheel_events=list(self._wheel_events))
+                    wheel_events=list(self._wheel_events),
+                    cursor_events=list(self._cursor_events))
                 self._last_gesture = g.name if g.name != "—" else None
             except Exception:
                 self._last_gesture = None
@@ -550,3 +562,7 @@ class LiveCapture:
     def recent_wheel_events(self):
         """Snapshot of recent OS wheel events for the GUI gesture readout."""
         return list(self._wheel_events)
+
+    def recent_cursor_events(self):
+        """Snapshot of recent OS cursor-move deltas for the GUI gesture readout."""
+        return list(self._cursor_events)
