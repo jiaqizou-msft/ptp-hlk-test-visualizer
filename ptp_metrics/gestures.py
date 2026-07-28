@@ -1,30 +1,34 @@
-"""Real-time touchpad gesture recognition.
+"""Gesture recognition grounded in the HID / PTP report and OS (hidclass) events.
 
-A lightweight, dependency-free heuristic classifier that looks at a short recent
-window of frames and names the gesture in progress — tap, press & hold, and
-1/2/3/4-finger swipes (with direction), two-finger scroll, and pinch (zoom
-in/out). It is intentionally simple and tuned for *live feedback* in the metrics
-panel, not for driving the OS.
+This does **not** re-invent gesture recognition from raw geometry. Instead it
+reads the fields the Windows Precision Touchpad stack actually reports:
 
-Design:
-  * Operate on the last ``window_s`` seconds of frames (position in mm when the
-    device size is known, else in logical counts scaled to a nominal size).
-  * Track the max simultaneous contact count and each contact's net travel.
-  * Classify by finger count + motion:
-      - no motion, brief contact           -> "Tap"
-      - no motion, sustained               -> "Press & hold"
-      - 1 finger moving                    -> "Swipe <dir>"
-      - 2 fingers, same direction          -> "Two-finger scroll <dir>"
-      - 2 fingers, separating/closing      -> "Pinch zoom in/out"
-      - 3/4 fingers moving                 -> "N-finger swipe <dir>"
+  * **Finger count** comes from the HID **Contact Count** usage (0x0D:0x54) that
+    the device puts in every PTP report — the same value ``hidclass.sys`` / the
+    PTP driver use. We take the max reported contact count across the recent
+    window as the number of fingers, never a geometric guess.
+  * **Button / click** comes from the HID **Button** field in the report.
+  * **Two-finger scroll** is what the OS synthesizes from a PTP two-finger drag:
+    ``hidclass`` -> the PTP driver emits mouse **wheel / hwheel** events. Live
+    capture picks those up from Raw Input (``RIM_TYPEMOUSE`` + ``RI_MOUSE_WHEEL``
+    / ``RI_MOUSE_HWHEEL``) and passes them here, so scroll is reported straight
+    from the OS, not inferred.
+
+Motion **direction** for swipes still uses the contact positions from the report
+(there is no HID field for "swipe direction"), but the *classification* (how
+many fingers, button, scroll) is taken from the report / OS.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+
+# A wheel event as seen from OS raw input: (timestamp_s, dx, dy) where dy>0 is a
+# scroll-down notch and dx>0 is scroll-right (in wheel-delta units / 120).
+WheelEvent = Tuple[float, float, float]
 
 
 @dataclass
@@ -32,12 +36,13 @@ class GestureResult:
     name: str = "—"
     detail: str = ""
     n_fingers: int = 0
+    source: str = ""      # classification source: "HID", "OS wheel", ...
 
 
-# thresholds (mm)
-_MOVE_MM = 3.0          # min net travel to count as a "move"
+# thresholds
+_MOVE_MM = 3.0          # min net travel (mm) to count a contact as "moving"
 _TAP_MAX_MM = 2.0       # max travel for a tap/hold
-_PINCH_MM = 4.0         # min spread change to call it a pinch
+_PINCH_MM = 4.0         # min spread change (mm) to call it a pinch
 _HOLD_S = 0.35          # min contact time to call a stationary touch a "hold"
 
 
@@ -48,48 +53,82 @@ def _dir_name(dx: float, dy: float) -> str:
     return "down" if dy > 0 else "up"
 
 
-def _tracks_in_window(frames, cpm_x: float, cpm_y: float
-                      ) -> Tuple[Dict[int, List[Tuple[float, float]]], int, float]:
-    """Return per-contact position lists (mm), max simultaneous count, and the
-    contact duration span in seconds (best-effort)."""
-    tracks: Dict[int, List[Tuple[float, float]]] = {}
-    max_simul = 0
+def _reported_finger_count(frames) -> int:
+    """Authoritative finger count from the HID Contact Count field.
+
+    Falls back to the number of tip-down contacts only if the report did not
+    carry a Contact Count value.
+    """
+    best = 0
+    saw_field = False
     for f in frames:
-        acs = f.active_contacts
-        max_simul = max(max_simul, len(acs))
-        for c in acs:
-            tracks.setdefault(c.contact_id, []).append((c.x / cpm_x, c.y / cpm_y))
-    return tracks, max_simul, 0.0
+        cc = getattr(f, "contact_count", None)
+        if cc is not None:
+            saw_field = True
+            best = max(best, int(cc))
+    if saw_field:
+        return best
+    for f in frames:
+        best = max(best, len(f.active_contacts))
+    return best
 
 
-def recognize(frames, device, window_s: float = 1.2,
-              time_fn=None) -> GestureResult:
+def _recent_wheel(wheel_events: Optional[Sequence[WheelEvent]],
+                  t_last: Optional[float], window_s: float
+                  ) -> Tuple[float, float]:
+    """Sum of (dx, dy) wheel deltas within the window. (0,0) if none."""
+    if not wheel_events:
+        return (0.0, 0.0)
+    sx = sy = 0.0
+    for (t, dx, dy) in wheel_events:
+        if t_last is None or t is None or (t_last - t) <= window_s:
+            sx += dx
+            sy += dy
+    return (sx, sy)
+
+
+def recognize(frames, device, window_s: float = 1.2, time_fn=None,
+              wheel_events: Optional[Sequence[WheelEvent]] = None) -> GestureResult:
     """Classify the gesture in the most recent ``window_s`` seconds of ``frames``.
 
-    ``time_fn(frame) -> seconds`` supplies timestamps; if omitted, contact
-    duration heuristics are skipped and only motion is used.
+    ``wheel_events`` are OS-synthesized mouse wheel notches captured from Raw
+    Input (the OS's own recognition of a two-finger scroll). ``time_fn(frame)``
+    supplies timestamps for the window / hold heuristics.
     """
     if not frames:
         return GestureResult()
 
-    # restrict to the recent window
-    if time_fn is not None:
-        t_last = time_fn(frames[-1])
-        if t_last is not None:
-            cut = t_last - window_s
-            frames = [f for f in frames
-                      if (time_fn(f) is None or time_fn(f) >= cut)]
+    t_last = time_fn(frames[-1]) if time_fn is not None else None
+    if time_fn is not None and t_last is not None:
+        cut = t_last - window_s
+        frames = [f for f in frames
+                  if (time_fn(f) is None or time_fn(f) >= cut)]
     if not frames:
         return GestureResult()
+
+    # --- OS-synthesized scroll (hidclass -> PTP driver -> wheel) -------------
+    wx, wy = _recent_wheel(wheel_events, t_last, window_s)
+    if abs(wx) >= 1.0 or abs(wy) >= 1.0:
+        return GestureResult(f"Two-finger scroll {_dir_name(wx, wy)}",
+                             "OS wheel", 2, source="OS wheel")
+
+    # --- finger count straight from the HID Contact Count field --------------
+    n = _reported_finger_count(frames)
+    if n == 0:
+        return GestureResult()
+
+    button_down = any(bool(getattr(f, "button", False)) for f in frames)
 
     cpm_x = (device.x_counts_per_mm if device and device.x_counts_per_mm else 1.0)
     cpm_y = (device.y_counts_per_mm if device and device.y_counts_per_mm else 1.0)
 
-    tracks, max_simul, _ = _tracks_in_window(frames, cpm_x, cpm_y)
-    if not tracks or max_simul == 0:
-        return GestureResult()
+    # position tracks — used only for motion magnitude/direction; the finger
+    # *count* above is from HID Contact Count.
+    tracks = {}
+    for f in frames:
+        for c in f.active_contacts:
+            tracks.setdefault(c.contact_id, []).append((c.x / cpm_x, c.y / cpm_y))
 
-    # per-contact net travel + displacement vectors
     disp: List[Tuple[float, float]] = []
     travels: List[float] = []
     for pts in tracks.values():
@@ -97,34 +136,34 @@ def recognize(frames, device, window_s: float = 1.2,
             disp.append((0.0, 0.0))
             travels.append(0.0)
             continue
-        x0, y0 = pts[0]
-        x1, y1 = pts[-1]
-        dvec = (x1 - x0, y1 - y0)
-        disp.append(dvec)
-        travels.append(float(np.hypot(*dvec)))
+        d = (pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1])
+        disp.append(d)
+        travels.append(float(np.hypot(*d)))
 
-    n = max_simul
-    moving = [t >= _MOVE_MM for t in travels]
-    any_move = any(moving)
+    any_move = any(t >= _MOVE_MM for t in travels)
 
-    # duration of the longest-lived contact (for tap vs hold)
     dur = None
     if time_fn is not None:
         ts = [time_fn(f) for f in frames if time_fn(f) is not None]
         if len(ts) >= 2:
             dur = ts[-1] - ts[0]
 
-    # ---- stationary: tap / hold ----
-    if not any_move and max(travels, default=0.0) <= _TAP_MAX_MM:
+    # click from the HID button field
+    if button_down and not any_move:
+        return GestureResult("Click" if n <= 1 else f"{n}-finger click",
+                             "HID button", n, source="HID")
+
+    # stationary: tap / hold (finger count from HID)
+    if not any_move and (max(travels, default=0.0) <= _TAP_MAX_MM):
         if dur is not None and dur >= _HOLD_S:
             label = "Press & hold" if n == 1 else f"{n}-finger hold"
-            return GestureResult(label, f"{dur:.2f}s stationary", n)
+            return GestureResult(label, f"{dur:.2f}s stationary (HID count {n})",
+                                 n, source="HID")
         label = "Tap" if n == 1 else f"{n}-finger tap"
-        return GestureResult(label, "brief contact", n)
+        return GestureResult(label, f"HID contact count {n}", n, source="HID")
 
-    # ---- two-finger: scroll vs pinch ----
-    if n == 2 and len(disp) >= 2:
-        # use the two longest-lived tracks
+    # two-finger (from HID): pinch vs pan
+    if n == 2:
         pts_list = [p for p in tracks.values() if len(p) >= 2]
         if len(pts_list) >= 2:
             a, b = pts_list[0], pts_list[1]
@@ -133,24 +172,29 @@ def recognize(frames, device, window_s: float = 1.2,
             dspread = spread1 - spread0
             if abs(dspread) >= _PINCH_MM:
                 if dspread > 0:
-                    return GestureResult("Pinch zoom in", f"+{dspread:.1f} mm spread", 2)
-                return GestureResult("Pinch zoom out", f"{dspread:.1f} mm spread", 2)
-        # otherwise a two-finger scroll in the mean direction
-        mx = float(np.mean([d[0] for d in disp]))
-        my = float(np.mean([d[1] for d in disp]))
+                    return GestureResult("Pinch zoom in",
+                                         f"+{dspread:.1f} mm (HID count 2)", 2,
+                                         source="HID")
+                return GestureResult("Pinch zoom out",
+                                     f"{dspread:.1f} mm (HID count 2)", 2,
+                                     source="HID")
+        mx = float(np.mean([d[0] for d in disp])) if disp else 0.0
+        my = float(np.mean([d[1] for d in disp])) if disp else 0.0
         if np.hypot(mx, my) >= _MOVE_MM:
-            return GestureResult(f"Two-finger scroll {_dir_name(mx, my)}",
-                                 f"{np.hypot(mx, my):.1f} mm", 2)
-        return GestureResult("Two-finger", "small motion", 2)
+            return GestureResult(f"Two-finger pan {_dir_name(mx, my)}",
+                                 f"{np.hypot(mx, my):.1f} mm (HID count 2)", 2,
+                                 source="HID")
+        return GestureResult("Two-finger", "HID contact count 2", 2, source="HID")
 
-    # ---- 1 / 3 / 4-finger swipe ----
+    # 1 / 3 / 4-finger swipe (count from HID, direction from positions)
     if any_move:
-        mx = float(np.mean([d[0] for d in disp]))
-        my = float(np.mean([d[1] for d in disp]))
+        mx = float(np.mean([d[0] for d in disp])) if disp else 0.0
+        my = float(np.mean([d[1] for d in disp])) if disp else 0.0
         dist = float(np.hypot(mx, my))
         if n == 1:
-            return GestureResult(f"Swipe {_dir_name(mx, my)}", f"{dist:.1f} mm", 1)
+            return GestureResult(f"Swipe {_dir_name(mx, my)}",
+                                 f"{dist:.1f} mm (HID count 1)", 1, source="HID")
         return GestureResult(f"{n}-finger swipe {_dir_name(mx, my)}",
-                             f"{dist:.1f} mm", n)
+                             f"{dist:.1f} mm (HID count {n})", n, source="HID")
 
-    return GestureResult(f"{n} contact(s)", "", n)
+    return GestureResult(f"{n} contact(s)", f"HID contact count {n}", n, source="HID")

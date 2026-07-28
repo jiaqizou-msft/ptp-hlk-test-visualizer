@@ -14,7 +14,7 @@ from .models import Recording
 CANONICAL_HEADER = [
     "Frame", "ScanTime", "ContactCount", "Button",
     "ContactId", "X", "Y", "TipSwitch", "Confidence",
-    "Width", "Height", "Pressure", "HostTimestamp",
+    "Width", "Height", "Pressure", "HostTimestamp", "Gesture",
 ]
 
 
@@ -23,17 +23,18 @@ def export_csv(rec: Recording, path: str) -> None:
         w = csv.writer(fh)
         w.writerow(CANONICAL_HEADER)
         for f in rec.frames:
+            g = "" if getattr(f, "gesture", None) is None else str(f.gesture)
             contacts = f.contacts or [None]
             for c in contacts:
                 if c is None:
                     w.writerow([f.index, _n(f.scan_time), f.contact_count,
                                 int(f.button), "", "", "", "", "", "", "", "",
-                                _n(f.host_timestamp)])
+                                _n(f.host_timestamp), g])
                 else:
                     w.writerow([
                         f.index, _n(f.scan_time), f.contact_count, int(f.button),
                         c.contact_id, _n(c.x), _n(c.y), int(c.tip), int(c.confidence),
-                        _n(c.width), _n(c.height), _n(c.pressure), _n(f.host_timestamp),
+                        _n(c.width), _n(c.height), _n(c.pressure), _n(f.host_timestamp), g,
                     ])
 
 

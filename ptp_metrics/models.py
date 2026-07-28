@@ -42,6 +42,9 @@ class Frame:
     contact_count: Optional[int] = None   # reported contact count for the frame
     button: bool = False                  # clickpad button state
     host_timestamp: Optional[float] = None  # seconds, wall-clock at capture (live mode)
+    # Gesture recognized from the HID/PTP report + OS (hidclass) wheel events,
+    # stamped by live capture; None for data that pre-dates gesture tagging.
+    gesture: Optional[str] = None
 
     @property
     def scan_time_us(self) -> Optional[float]:

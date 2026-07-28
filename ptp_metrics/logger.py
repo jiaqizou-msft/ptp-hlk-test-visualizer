@@ -30,7 +30,7 @@ from typing import Optional
 from .models import Frame
 
 CSV_HEADER = ("Frame,ScanTime,ContactCount,Button,ContactId,X,Y,"
-              "TipSwitch,Confidence,Width,Height,Pressure,HostTimestamp\n")
+              "TipSwitch,Confidence,Width,Height,Pressure,HostTimestamp,Gesture\n")
 
 
 class StreamLogger:
@@ -89,6 +89,7 @@ class StreamLogger:
             obj = {
                 "i": f.index, "scan": f.scan_time, "cc": f.contact_count,
                 "btn": int(f.button), "t": f.host_timestamp,
+                "gesture": f.gesture,
                 "contacts": [
                     {"id": c.contact_id, "x": c.x, "y": c.y, "tip": int(c.tip),
                      "conf": int(c.confidence), "w": c.width, "h": c.height,
@@ -98,15 +99,18 @@ class StreamLogger:
             }
             self._fh.write(json.dumps(obj, separators=(",", ":")) + "\n")
         else:
+            gesture = _csv_field(f.gesture)
             contacts = f.contacts or [None]
             for c in contacts:
                 if c is None:
                     row = (f.index, _n(f.scan_time), _n(f.contact_count),
-                           int(f.button), "", "", "", "", "", "", "", "", _n(f.host_timestamp))
+                           int(f.button), "", "", "", "", "", "", "", "",
+                           _n(f.host_timestamp), gesture)
                 else:
                     row = (f.index, _n(f.scan_time), _n(f.contact_count), int(f.button),
                            c.contact_id, _n(c.x), _n(c.y), int(c.tip), int(c.confidence),
-                           _n(c.width), _n(c.height), _n(c.pressure), _n(f.host_timestamp))
+                           _n(c.width), _n(c.height), _n(c.pressure),
+                           _n(f.host_timestamp), gesture)
                 self._fh.write(",".join(str(v) for v in row) + "\n")
                 self.rows_written += 1
         self.frames_written += 1
@@ -114,3 +118,10 @@ class StreamLogger:
 
 def _n(v):
     return "" if v is None else v
+
+
+def _csv_field(v):
+    """Sanitize a free-text field so it never breaks the CSV row."""
+    if v is None:
+        return ""
+    return str(v).replace(",", " ").replace("\n", " ")

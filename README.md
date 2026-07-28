@@ -76,7 +76,7 @@ python -m ptp_metrics gui
 | **Save All…** | One click: write the CSV, the PNG+JSON report, and finalize the screen video (if one is recording) into a chosen folder with a shared base name |
 | **Open Recording…** | Load and replay CSV, JSONL, DigiInfo XML, or ptrecorder folder exports offline |
 | **Spec Checks Panel** | Live PASS/FAIL verdicts against Microsoft thresholds |
-| **Gesture (live)** | Real-time gesture recognition shown in the metrics panel — tap, press & hold, 1/3/4-finger swipe (with direction), two-finger scroll, and pinch zoom in/out |
+| **Gesture (live)** | Real-time gesture recognition **grounded in the HID/PTP report** (finger count from the HID Contact Count field, click from the Button field) and the **OS** (two-finger scroll read from the mouse wheel events Windows synthesizes via `hidclass.sys` / the PTP driver). Shown in the metrics panel and **written into every logged row** (CSV `Gesture` column / JSONL `gesture` field) |
 | **W/H mm + Apply** | Set touchpad physical dimensions for metric calculations |
 | **Spec Overlay** | Toggle grid lines and threshold visualization |
 | **Pressure** | Dropdown selecting the pressure source: `Off` or `HID Pressure` (force-haptic pads that report HID Tip Pressure). The current value is shown in the metrics panel |
@@ -119,21 +119,22 @@ python -m ptp_metrics live --width-mm 100 --height-mm 70 --json report.json
 ### CSV (Canonical Schema)
 
 ```
-Frame,ScanTime,ContactCount,Button,ContactId,X,Y,TipSwitch,Confidence,Width,Height,Pressure,HostTimestamp
-0,100,1,0,0,500,300,1,255,15,15,128,1718711400000
-0,100,1,0,1,510,310,1,255,14,14,130,1718711400000
-1,200,1,0,0,501,301,1,255,15,15,129,1718711400001
+Frame,ScanTime,ContactCount,Button,ContactId,X,Y,TipSwitch,Confidence,Width,Height,Pressure,HostTimestamp,Gesture
+0,100,1,0,0,500,300,1,255,15,15,128,1718711400000,Swipe right
+0,100,1,0,1,510,310,1,255,14,14,130,1718711400000,Swipe right
+1,200,1,0,0,501,301,1,255,15,15,129,1718711400001,Swipe right
 ```
 
 - **One row per contact per frame**
+- The `Gesture` column carries the gesture recognized from the HID/PTP report + OS at that frame
 - Compatible with Excel, pandas, R, etc.
 - Readable by offline analysis on any OS
 
 ### JSONL (JSON Lines)
 
 ```json
-{"i":0,"scan":100,"cc":1,"btn":0,"t":1718711400000,"contacts":[{"id":0,"x":500,"y":300,"tip":1,"conf":255,"w":15,"h":15,"p":128}]}
-{"i":1,"scan":200,"cc":1,"btn":0,"t":1718711400001,"contacts":[{"id":0,"x":501,"y":301,"tip":1,"conf":255,"w":15,"h":15,"p":129}]}
+{"i":0,"scan":100,"cc":1,"btn":0,"t":1718711400000,"gesture":"Swipe right","contacts":[{"id":0,"x":500,"y":300,"tip":1,"conf":255,"w":15,"h":15,"p":128}]}
+{"i":1,"scan":200,"cc":1,"btn":0,"t":1718711400001,"gesture":"Swipe right","contacts":[{"id":0,"x":501,"y":301,"tip":1,"conf":255,"w":15,"h":15,"p":129}]}
 ```
 
 - **One compact JSON object per line**

@@ -162,12 +162,21 @@ def test_gesture_recognition():
     g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
     assert g.name == "Swipe up", g.name
 
-    # two-finger scroll down: both fingers move +y together
+    # two-finger pan down (geometry, count from HID Contact Count = 2)
     seq = [{0: (2000, 2000 + int(k * 30 * cpm / 30)),
             1: (2600, 2000 + int(k * 30 * cpm / 30))} for k in range(31)]
     g = GEST.recognize(make(seq).frames, dev, time_fn=tfn)
+    assert g.name == "Two-finger pan down", g.name
+    assert g.n_fingers == 2 and g.source == "HID"
+
+    # OS-recognized scroll: a wheel event from Raw Input drives the label,
+    # regardless of geometry (this is hidclass -> PTP driver -> wheel).
+    seq = [{0: (3000, 3000), 1: (3600, 3000)} for _ in range(10)]
+    frames = make(seq).frames
+    wheel = [(frames[-1].host_timestamp - 0.05, 0.0, 3.0)]  # dy>0 -> scroll down
+    g = GEST.recognize(frames, dev, time_fn=tfn, wheel_events=wheel)
     assert g.name == "Two-finger scroll down", g.name
-    assert g.n_fingers == 2
+    assert g.source == "OS wheel"
 
     # pinch zoom in: two fingers separate
     seq = [{0: (3000 - int(k * 20 * cpm / 30), 3000),
@@ -191,6 +200,44 @@ def test_gesture_recognition():
     seq = [{0: (3000, 3000)} for _ in range(80)]
     g = GEST.recognize(make(seq).frames, dev, window_s=2.0, time_fn=tfn)
     assert g.name == "Press & hold", g.name
+
+
+def test_logger_includes_gesture():
+    from ptp_metrics.logger import StreamLogger
+    from ptp_metrics.models import Contact, DeviceInfo, Frame, Recording
+    import json as _json
+
+    dev = DeviceInfo(name="L")
+    frames = [
+        Frame(index=0, scan_time=100, contacts=[Contact(0, 500, 300)],
+              contact_count=1, host_timestamp=0.0, gesture="Swipe right"),
+        Frame(index=1, scan_time=170, contacts=[Contact(0, 520, 300)],
+              contact_count=1, host_timestamp=0.007, gesture="Swipe right"),
+    ]
+    rec = Recording(device=dev, frames=frames, source="synthetic")
+
+    with tempfile.TemporaryDirectory() as d:
+        pcsv = os.path.join(d, "g.csv")
+        lg = StreamLogger(pcsv)
+        lg.start()
+        for f in rec.frames:
+            lg.write(f)
+        lg.stop()
+        with open(pcsv, encoding="utf-8") as fh:
+            head = fh.readline().strip()
+            first = fh.readline().strip()
+        assert head.endswith("Gesture"), head
+        assert first.endswith("Swipe right"), first
+
+        pj = os.path.join(d, "g.jsonl")
+        lg2 = StreamLogger(pj)
+        lg2.start()
+        for f in rec.frames:
+            lg2.write(f)
+        lg2.stop()
+        with open(pj, encoding="utf-8") as fh:
+            obj = _json.loads(fh.readline())
+        assert obj.get("gesture") == "Swipe right", obj
 
 
 def test_hid_descriptor_resolution():

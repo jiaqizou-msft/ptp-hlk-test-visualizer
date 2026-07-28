@@ -26,10 +26,12 @@ import ctypes as C
 import sys
 import threading
 import time
+from collections import deque
 from ctypes import wintypes
 from typing import Callable, List, Optional
 
 from .models import Contact, DeviceInfo, Frame
+from . import gestures as _gestures
 
 
 def is_supported() -> bool:
@@ -58,13 +60,21 @@ HID_USAGE_DIGITIZER_WIDTH = 0x48
 HID_USAGE_DIGITIZER_HEIGHT = 0x49
 HID_USAGE_DIGITIZER_TIP_PRESSURE = 0x30
 
+# generic mouse (for OS-synthesized scroll from a PTP two-finger drag)
+HID_USAGE_GENERIC_MOUSE = 0x02
+
 HIDP_INPUT = 0
 
+RIM_TYPEMOUSE = 0
 RIM_TYPEHID = 2
 RID_INPUT = 0x10000003
 RIDI_PREPARSEDDATA = 0x20000005
 RIDI_DEVICEINFO = 0x2000000B
 RIDEV_INPUTSINK = 0x00000100
+# RAWMOUSE.usButtonFlags bits for wheel motion (OS emits these for PTP scroll)
+RI_MOUSE_WHEEL = 0x0400
+RI_MOUSE_HWHEEL = 0x0800
+WHEEL_DELTA = 120.0
 WM_INPUT = 0x00FF
 WM_QUIT = 0x0012
 HWND_MESSAGE = wintypes.HWND(-3)
@@ -94,8 +104,22 @@ if is_supported():
         _fields_ = [("dwSizeHid", wintypes.DWORD), ("dwCount", wintypes.DWORD),
                     ("bRawData", UCHAR * 1)]
 
+    class _RAWMOUSE_BUTTONS(C.Structure):
+        _fields_ = [("usButtonFlags", USHORT), ("usButtonData", C.c_short)]
+
+    class _RAWMOUSE_U(C.Union):
+        _fields_ = [("ulButtons", ULONG), ("btn", _RAWMOUSE_BUTTONS)]
+
+    class RAWMOUSE(C.Structure):
+        _fields_ = [("usFlags", USHORT), ("u", _RAWMOUSE_U),
+                    ("ulRawButtons", ULONG), ("lLastX", LONG), ("lLastY", LONG),
+                    ("ulExtraInformation", ULONG)]
+
     class RAWINPUT(C.Structure):
         _fields_ = [("header", RAWINPUTHEADER), ("hid", RAWHID)]
+
+    class RAWINPUTMOUSE(C.Structure):
+        _fields_ = [("header", RAWINPUTHEADER), ("mouse", RAWMOUSE)]
 
     class HIDP_CAPS(C.Structure):
         _fields_ = [
@@ -222,6 +246,12 @@ class LiveCapture:
         self._frame_index = 0
         self._caps_by_device = {}
         self._t0 = None
+        # OS-synthesized scroll: (timestamp_s, dx, dy) wheel notches from Raw Input
+        self._wheel_events = deque(maxlen=256)
+        # rolling frame window used to tag each frame with the current gesture
+        self._recent = deque(maxlen=400)
+        self._last_gesture = None
+        self._last_gesture_t = 0.0
 
     # -- public API ---------------------------------------------------------- #
     def start(self) -> None:
@@ -266,6 +296,17 @@ class LiveCapture:
                              RIDEV_INPUTSINK, self._hwnd)
         if not user32.RegisterRawInputDevices(C.byref(rid), 1, C.sizeof(RAWINPUTDEVICE)):
             raise C.WinError(C.get_last_error())
+
+        # Also sink the generic mouse: when the PTP driver (via hidclass) turns a
+        # two-finger drag into scroll, the OS emits mouse wheel/hwheel here, which
+        # is the OS's own recognition of the scroll gesture (not inferred).
+        rid_mouse = RAWINPUTDEVICE(HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_MOUSE,
+                                   RIDEV_INPUTSINK, self._hwnd)
+        try:
+            user32.RegisterRawInputDevices(C.byref(rid_mouse), 1,
+                                           C.sizeof(RAWINPUTDEVICE))
+        except Exception:
+            pass  # scroll-from-OS is best-effort; touchpad capture still works
 
         msg = MSG()
         while self._running:
@@ -349,6 +390,9 @@ class LiveCapture:
                                   C.byref(size), C.sizeof(RAWINPUTHEADER)) != size.value:
             return
         ri = C.cast(buf, C.POINTER(RAWINPUT)).contents
+        if ri.header.dwType == RIM_TYPEMOUSE:
+            self._handle_mouse(buf)
+            return
         if ri.header.dwType != RIM_TYPEHID:
             return
         info = self._get_preparsed(ri.header.hDevice)
@@ -460,7 +504,49 @@ class LiveCapture:
                                x=float(x), y=float(y), tip=True, confidence=True))
         return out
 
+    def _handle_mouse(self, buf) -> None:
+        """Record OS-synthesized wheel/hwheel notches (PTP two-finger scroll).
+
+        The PTP driver / hidclass turns a two-finger drag into mouse wheel
+        events; we sink them here so the gesture layer can report the scroll the
+        OS itself recognized, rather than inferring it from geometry.
+        """
+        try:
+            rim = C.cast(buf, C.POINTER(RAWINPUTMOUSE)).contents
+            flags = rim.mouse.u.btn.usButtonFlags
+            data = rim.mouse.u.btn.usButtonData  # signed
+            t = time.perf_counter()
+            if flags & RI_MOUSE_WHEEL:
+                # wheel up (data>0) scrolls content up => "scroll up" (dy<0)
+                self._wheel_events.append((t, 0.0, -data / WHEEL_DELTA))
+            if flags & RI_MOUSE_HWHEEL:
+                self._wheel_events.append((t, data / WHEEL_DELTA, 0.0))
+        except Exception:
+            pass
+
+    def _tag_gesture(self, frame: Frame) -> None:
+        """Stamp ``frame.gesture`` from the HID report + OS wheel (throttled)."""
+        self._recent.append(frame)
+        now = time.perf_counter()
+        # recompute at most ~20x/sec; reuse the label in between
+        if now - self._last_gesture_t >= 0.05 or self._last_gesture is None:
+            try:
+                g = _gestures.recognize(
+                    list(self._recent), self.device, window_s=1.2,
+                    time_fn=lambda f: f.host_timestamp,
+                    wheel_events=list(self._wheel_events))
+                self._last_gesture = g.name if g.name != "—" else None
+            except Exception:
+                self._last_gesture = None
+            self._last_gesture_t = now
+        frame.gesture = self._last_gesture
+
     def _emit(self, frame: Frame) -> None:
+        self._tag_gesture(frame)
         self.frames.append(frame)
         if self.on_frame:
             self.on_frame(frame)
+
+    def recent_wheel_events(self):
+        """Snapshot of recent OS wheel events for the GUI gesture readout."""
+        return list(self._wheel_events)

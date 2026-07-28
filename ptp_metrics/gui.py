@@ -765,7 +765,8 @@ class PTPMetricsApp(tk.Tk):
                                     contacts=contacts,
                                     contact_count=o.get("cc"),
                                     button=bool(o.get("btn", 0)),
-                                    host_timestamp=o.get("t")))
+                                    host_timestamp=o.get("t"),
+                                    gesture=o.get("gesture")))
         return Recording(device=dev, frames=frames, source=path)
 
     def apply_size(self):
@@ -893,15 +894,21 @@ class PTPMetricsApp(tk.Tk):
         self._render_gesture(rec)
 
     def _render_gesture(self, rec: Recording):
-        """Classify and display the current gesture (live) in the panel."""
-        # only meaningful for live capture / recent motion
+        """Show the gesture recognized from the HID/PTP report (+ OS wheel)."""
+        wheel = None
+        if self._live and self._cap is not None:
+            try:
+                wheel = self._cap.recent_wheel_events()
+            except Exception:
+                wheel = None
         try:
             g = GEST.recognize(rec.frames, rec.device, window_s=1.2,
-                               time_fn=self._frame_time_s)
+                               time_fn=self._frame_time_s, wheel_events=wheel)
         except Exception:
             g = GEST.GestureResult()
         self.gesture_var.set(g.name)
-        self.gesture_detail_var.set(g.detail)
+        src = f"[{g.source}] " if g.source else ""
+        self.gesture_detail_var.set(f"{src}{g.detail}")
         self._gesture_label.configure(fg=ACCENT if g.name != "—" else MUTED)
 
     def _compute_pressure(self, rec: Recording) -> Optional[str]:
